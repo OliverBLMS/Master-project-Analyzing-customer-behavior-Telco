@@ -2,13 +2,14 @@
 title: 'R notebook: Analysing customer behavior in Telco'
 author: "Oliver Belmans"
 output:
-  html_notebook: default
+  html_notebook: 
+    toc: yes
   html_document: default
 ---
 
 This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
 
-## Work plan
+# Work plan
 
 Weekly progress is documented in this table. Hard **deadline** is 17-04-2017.
 
@@ -27,7 +28,7 @@ Things to cover in next weeks:
 
 # Week 1: Exploration of CDR, pre-processing, making usage features
 
-### Workdirectory and packages/libraries
+## Workdirectory and packages/libraries
 
 Basic steps to set the workdirectory and load the necessary packages/libraries.
 
@@ -43,10 +44,9 @@ pkg <- c("tidyverse", "statnet", "igraph", "data.table")
 lapply(pkg, require, character.only = TRUE)
 ```
 
-### Read in data (or make dummy dataset)
+## Read in data (or make dummy dataset)
 
-The test CDR dataset only contain 100 record, whereas each record represents an edge between two nodes. 
-Instead of working on this test dataset, I created a dummy set on my own. The test set only contains isolated relationships between two nodes.
+The test CDR dataset only contain 100 record, whereas each record represents an edge between two nodes. However, the test set only contains isolated relationships between two nodes. So, instead of working on this test dataset, I created a dummy set on my own. 
 
 ```{r}
 
@@ -81,8 +81,17 @@ sample_cdr <- data.table(as_data_frame(x = net)) %>%
 head(sample_cdr)
 ```
 
-## Pre-process
-### Date breakdown structure
+### Pre-process (not clear with test set)
+
+> A few question to keep in mind for the pre-processing
+> 
+* todo: Filter outliers or non relevant items
+* todo: filter irrelevant user for network features, outside network? 
+  * Possible: for those metric keep the whole network, but only for clustering keep the Nodes that belong to the network
+* Question: how to label new customers? Since those are of interest in the sequence mining
+
+
+## Creating breakdown structure
 
 Next step is solving the date format, since the usage features will need a breakdown structure based on days, houres, peak houres,..
 
@@ -108,17 +117,7 @@ sample_cdr <-
 head(sample_cdr)
 ```
 
-> A few question to keep in mind for the pre-processing
-> 
-* todo: Filter outliers or non relevant items
-* todo: filter irrelevant user for network features, outside network? 
-  * Possible: for those metric keep the whole network, but only for clustering keep the Nodes that belong to the network
-* Question: how to label new customers? Since those are of interest in the sequence mining
-
-
-### Creating the usage metrics
-
-#### Create the usage metrics based on the breakdown structure (day, peak_hour, weekday)
+## Create the usage metrics based on the breakdown structure (day, peak_hour, weekday)
 
 Main idea is to generate these features on the dataset, but in order to generate trajectories, I need slice and aggregate data. 
 I will slice the data per week as the total timeframe of the dataset will be 4 months. So a records that is involved from start to end will contains +- 16 aggregated records.
@@ -129,7 +128,7 @@ I choose to do feature extraction for these features:
 * ave_call_time = average call time
 * total_call_time = sum of all call times
 
-##### Aggregated by week
+#### Aggregated by week
 
 ```{r}
 # Variable creation based on usage
@@ -154,7 +153,7 @@ head(week_set)
 
 ```
 
-##### Aggregated by day
+#### Aggregated by day
 
 ```{r}
 
@@ -174,7 +173,7 @@ day_set <-
 head(day_set)
 ```
 
-##### Aggregated by peak vs non-peak houres
+#### Aggregated by peak vs non-peak houres
 
 ```{r}
 peak_set <-
@@ -193,7 +192,7 @@ peak_set <-
 head(peak_set)
 ```
 
-##### Aggregated by week- vs weekend-days
+#### Aggregated by week- vs weekend-days
 
 ```{r}
 weekday_set <- 
@@ -212,7 +211,7 @@ weekday_set <-
 head(weekday_set)
 ```
 
-##### Final dataset with the usage features
+#### Final dataset with the usage features
 
 Lastly, join all the dataset so it contains per customer per week a wide format with all the usage features
 

@@ -2,9 +2,9 @@
 title: 'R notebook: Analysing customer behavior in Telco'
 author: "Oliver Belmans"
 output:
-  html_notebook: 
-    toc: yes
-  html_document: default
+html_notebook: 
+toc: yes
+html_document: default
 ---
 
 This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
@@ -15,7 +15,8 @@ Weekly progress is documented in this table. Hard **deadline** is 17-04-2017.
 
 | week | Topic covered |
 |------|---------------|
-| w1   | Exploration of CDR, pre-processing, making usage features |
+| w1   | Data exploration, pre-processing, features extraction |
+| w2   | Create network features |
 
 Things to cover in next weeks:
 
@@ -32,7 +33,7 @@ Things to cover in next weeks:
 
 Basic steps to set the workdirectory and load the necessary packages/libraries.
 
-```{r}
+```{r, message=FALSE, warning=FALSE}
 # get / set workdirectory to read in the datafile
 ################################################################################################################
 setwd(dir = "/Users/oliver.belmans/Data/R_workdirectory/Thesis")
@@ -40,8 +41,8 @@ getwd()
 
 # load packages/libraries used in the analysis
 ################################################################################################################
-pkg <- c("tidyverse", "statnet", "igraph", "data.table")
-lapply(pkg, require, character.only = TRUE)
+pkg <- c("tidyverse", "igraph", "data.table", "dtplyr")
+lapply(pkg, require, character.only = TRUE )
 ```
 
 ## Read in data (or make dummy dataset)
@@ -53,74 +54,64 @@ The test CDR dataset only contain 100 record, whereas each record represents an 
 # read sample dataset (for now make sample set)
 ################################################################################################################
 # read test CDR dataset
-# sample_cdr <- fread(input = "sample_cdr.txt", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+cdr1 <- fread(input = "PREPAID_CDR_ANONYM_201005.txt", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+# cdr2 <- fread(input = "PREPAID_CDR_ANONYM_201006.txt", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+dim(cdr1)
 
-# Make Dummy set with igraph
-net <- sample_smallworld(dim = 1, size = 2000, nei =  20, p = 0.6, loops = FALSE, multiple = TRUE)
-
-# function to generate date time for the variable CALL_START_DT_TM
-size_net <- ecount(net)
-date_time_gerenator <- function(N, st="2010/01/01", et="2010/01/31") {
-  st <- as.POSIXct(as.Date(st))
-  et <- as.POSIXct(as.Date(et))
-  dt <- as.numeric(difftime(et,st,unit="sec"))
-  ev <- sort(runif(N, 0, dt))
-  rt <- st + ev
-  sample(rt)
-}
-
-# transform graph dataset to dataframe and add extra variables (call date time, call duration)
-sample_cdr <- data.table(as_data_frame(x = net)) %>%
-  mutate(
-# use size_net for correct number of records to generate
-  CALL_START_DT_TM = date_time_gerenator(size_net),
-# generate random call duration 
-  CALL_ACTUAL_DURATION = round(abs(rnorm(size_net, 100, 200)),0)
-)
-# print head
-head(sample_cdr)
 ```
 
-### Pre-process (not clear with test set)
+## Pre-process (not clear with test set)
 
 > A few question to keep in mind for the pre-processing
 > 
-* todo: Filter outliers or non relevant items
-* todo: filter irrelevant user for network features, outside network? 
-  * Possible: for those metric keep the whole network, but only for clustering keep the Nodes that belong to the network
+* Outlier?
+* Filter in-network customers for clustering
 * Question: how to label new customers? Since those are of interest in the sequence mining
 
 
 ## Creating breakdown structure
 
-Next step is solving the date format, since the usage features will need a breakdown structure based on days, houres, peak houres,..
+Next step is solving the date format, since the usage features will need a breakdown structure for calculations (based on days, houres, peak houres,..)
 
 ```{r}
 # Variable manipulations
 ################################################################################################################
 
+
 ## CALL_START_DT to date format
 ## Create extra date/time variables like week-, daynumber, houres
 sample_cdr <-
-  sample_cdr %>%
+  cdr1 %>% 
   mutate(
-  # CALL_START_DT_TM = strptime(paste(sample_cdr$CALL_START_DT, sample_cdr$CALL_START_TM),"%d%b%Y %H:%M:%S")
-  WEEK_NR = format(CALL_START_DT_TM, "%U"),
-  DAY_NR = format(CALL_START_DT_TM, "%w"),
-  DAY = format(CALL_START_DT_TM, "%a"),
-  HOUR = as.integer(format(CALL_START_DT_TM, "%H")),
-  PEAK_HOUR = ifelse(HOUR >= 8 & HOUR <= 18, "PEAK", "NON-PEAK"),
-  WEEKDAYS = ifelse(DAY_NR %in% c(0,6), "WEEKEND", "WEEK")
-  )
+    CALL_START_DT = as.POSIXct(CALL_START_DT, "%d%b%Y", tz = "GMT"),
+    CALL_START_DT_TM = as.POSIXct(paste(CALL_START_DT, CALL_START_TM),"%Y-%m-%d %H:%M:%S", tz = "GMT"),
+    WEEK_NR = format(CALL_START_DT_TM, "%W"),
+    DAY_NR = format(CALL_START_DT_TM, "%u"),
+    DAY = format(CALL_START_DT_TM, "%a"),
+    HOUR = as.integer(format(CALL_START_DT_TM, "%H")),
+    PEAK_HOUR = ifelse(HOUR >= 8 & HOUR <= 18, "PEAK", "NON_PEAK"),
+    WEEKDAYS = ifelse(DAY_NR %in% c(6,7), "WEEKEND", "WEEK")
+  ) 
 
 # print head
 head(sample_cdr)
+sample_cdr <- sample_frac(group_by(sample_cdr, WEEK_NR), size = 0.1)
+
+# Get max day value of a certain inteval. I choose grouping of weeks
+sample_cdr <- 
+  sample_cdr %>% 
+  mutate(
+    mygroup = ceiling(as.numeric(WEEK_NR) / 2) *2) %>%
+  group_by(mygroup) %>%
+  mutate(
+    max_date = max(CALL_START_DT)
+  ) %>% ungroup 
+
 ```
 
 ## Create the usage metrics based on the breakdown structure (day, peak_hour, weekday)
 
-Main idea is to generate these features on the dataset, but in order to generate trajectories, I need slice and aggregate data. 
-I will slice the data per week as the total timeframe of the dataset will be 4 months. So a records that is involved from start to end will contains +- 16 aggregated records.
+Main idea is to generate usage features for customers in the dataset. However, this needs to be done at regular intervals, taking a sequence static observations at multiple time points and using these intervals for feature extraction. I choose to do this per week, so change of behavior can be tracked by week. I will slice the data per week and create aggregated records of subscribers who where active during that week. So a customer who's active every week will contains +- 16 aggregated records (final dataset contains 4 months, each month +- 4 weeks).
 
 I choose to do feature extraction for these features:
 
@@ -128,87 +119,111 @@ I choose to do feature extraction for these features:
 * ave_call_time = average call time
 * total_call_time = sum of all call times
 
-#### Aggregated by week
+#### Aggregated by 2 week
+
+This steps generates features of the usage of a customer such as number of calls during the 2 week interval, but also more in detail like per day, per (non) peak hours, week or weekend days. Also, for the same breakdown structure the duration of calls is aggregated.
 
 ```{r}
 # Variable creation based on usage
 # create usage KPI 
 ################################################################################################################
-# Create stats sliced (group_by) over week_nr
+# Create function to calculate the usage features
+usage_stats <- function(dataset, group1, group2, ...) {
+  # return a dataset with usage features
+  dataset %>%
+    group_by_(group1, group2, ...) %>%
+    summarise(
+      nr_call= n(),
+      ave_call_time = mean(CALL_ACTUAL_DURATION),
+      total_call_time = sum(CALL_ACTUAL_DURATION)
+    ) %>%
+    gather_(key_col = "variable", value_col = "value", gather_cols = c("nr_call", "ave_call_time", "total_call_time")) %>%
+    unite_("temp", c("variable", ...)) %>%
+    spread_("temp", "value", fill = 0) %>%
+    ungroup()
+}
 
-# global per week
-week_set <- 
-  sample_cdr %>%
-  group_by(WEEK_NR, from) %>%
-  summarise(
-    nr_call= n(),
-    ave_call_time = mean(CALL_ACTUAL_DURATION),
-    total_call_time = sum(CALL_ACTUAL_DURATION)
-  ) %>%
-  gather(variable, value, -c(from, WEEK_NR)) %>%
-  spread(variable, value, fill = 0)
-
-# print head
-head(week_set)
-
-```
-
-#### Aggregated by day
-
-```{r}
-
+# number of outbound calls per group = 2 weeks 
+# average outbound call duration per group
+# total call time per group
+week_set <-
+  usage_stats(dataset = sample_cdr, "mygroup", "A_NUMBER")
+# number of outbound calls per day over 2 weeks
+# average outbound call duration per day over 2 weeks
+# total call time per day over 2 weeks
 day_set <- 
-  sample_cdr %>%
-  group_by(WEEK_NR, from, DAY) %>%
-  summarise(
-    nr_call= n(),
-    ave_call_time = mean(CALL_ACTUAL_DURATION),
-    total_call_time = sum(CALL_ACTUAL_DURATION)
-  ) %>%
-  gather(variable, value, -c(from, WEEK_NR, DAY)) %>%
-  unite(temp, variable, DAY) %>%
-  spread(temp, value, fill = 0)
-
-# print head
-head(day_set)
-```
-
-#### Aggregated by peak vs non-peak houres
-
-```{r}
+  usage_stats(dataset = sample_cdr, "mygroup", "A_NUMBER", "DAY")
+# number of outbound calls in (non) peak hours 
+# average outbound call duration in (non) peak hours 
+# total call time in (non) peak hours 
 peak_set <-
-  sample_cdr %>%
-  group_by(WEEK_NR, from, PEAK_HOUR) %>%
-  summarise(
-    nr_call= n(),
-    ave_call_time = mean(CALL_ACTUAL_DURATION),
-    total_call_time = sum(CALL_ACTUAL_DURATION)
-  ) %>%
-  gather(variable, value, -c(from, WEEK_NR, PEAK_HOUR)) %>%
-  unite(temp, variable, PEAK_HOUR) %>%
-  spread(temp, value, fill = 0)
+  usage_stats(dataset = sample_cdr, "mygroup", "A_NUMBER", "PEAK_HOUR")
+# number and % of outbound calls in week (end) days
+# average outbound call duration per week (end) days
+# total call time per week (end) days
+weekday_set <- 
+  usage_stats(dataset = sample_cdr, "mygroup", "A_NUMBER", "WEEKDAYS")
+# number and % of outbound calls per target network
+# average outbound call duration per target network
+# total call time per per target network
+network_set <- 
+  usage_stats(dataset = sample_cdr, "mygroup", "A_NUMBER", "TARGET_AREA")
 
-# print head
-head(peak_set)
 ```
 
-#### Aggregated by week- vs weekend-days
+
+#### Add recency variable
+
+Take into account the recency of call made within the interval of 2 weeks. This is implementen as 1 feature: the latest activity, but also incorporated into the social network analyses as edge weights. 
 
 ```{r}
-weekday_set <- 
-  sample_cdr %>%
-  group_by(WEEK_NR, from, WEEKDAYS) %>%
-  summarise(
-    nr_call= n(),
-    ave_call_time = mean(CALL_ACTUAL_DURATION),
-    total_call_time = sum(CALL_ACTUAL_DURATION)
-  ) %>%
-  gather(variable, value, -c(from, WEEK_NR, WEEKDAYS)) %>%
-  unite(temp, variable, WEEKDAYS) %>%
-  spread(temp, value, fill = 0)
+# Calculate recency of calls for input in the decay function
 
-# print head
-head(weekday_set)
+decay_factor <- function(days, factor) {
+  exp(1)^(-days * factor)
+}
+
+# First is almost linear,
+# I prefer factor 0.4
+par(mfcol=c(2,2))
+plot(x = 0:13, y =  do.call(decay_factor, args = list(0:13, 0.1)), type = "b", xlab = "days", ylab = "recency", main = "exp(1)^(-days*0.1)")
+plot(x = 0:13, y =  do.call(decay_factor, args = list(0:13 ,0.2)), type = "b", xlab = "days", ylab = "recency", main = "exp(1)^(-days*0.2)")
+plot(x = 0:13, y =  do.call(decay_factor, args = list(0:13, 0.3)), type = "b", xlab = "days", ylab = "recency", main = "exp(1)^(-days*0.3)")
+plot(x = 0:13, y =  do.call(decay_factor, args = list(0:13, 0.4)), type = "b", xlab = "days", ylab = "recency", main = "exp(1)^(-days*0.4)")
+
+```
+
+```{r}
+# Calculate recency of last activity for a customer PER mygroup 
+recency_set <- 
+  sample_cdr %>% 
+  group_by(mygroup, A_NUMBER) %>%
+  summarise(diffday = as.integer(difftime(max_date,CALL_START_DT, units = "days"))) %>%
+  mutate(recency = decay_factor(diffday, 0.4)) %>%
+  ungroup()
+
+# Add recency PER each call based on the 2 week interval
+sample_cdr <-
+  sample_cdr %>%
+  mutate(
+    diffday = as.integer(difftime(max_date,CALL_START_DT, units = "days")),
+    weigth = decay_factor(diffday, 0.4))
+
+```
+
+
+```{r}
+
+# merge dataset to a wide format
+dataset_usage_kpi <- 
+  Reduce(left_join, list(week_set, day_set, peak_set, weekday_set, network_set, recency_set)) 
+
+# add percentage features for number of call per X and total call time per X
+dataset_usage_kpi <-
+  dataset_usage_kpi %>%
+  mutate_at(vars(starts_with("nr_call_")), funs("perc" = . / nr_call)) %>%
+  mutate_at(vars(starts_with("total_call_time_")), funs("perc" = . / total_call_time))
+
 ```
 
 #### Final dataset with the usage features
@@ -216,14 +231,156 @@ head(weekday_set)
 Lastly, join all the dataset so it contains per customer per week a wide format with all the usage features
 
 ```{r}
-
-# merge sets
-# week set must be the first in orde to set the avaiable (week_nr,from) as merge keys
-dataset_usage_kpi <- Reduce(left_join, x = list(week_set, day_set, peak_set, weekday_set))
-
-# print head
+# print head full dataset with usage features
 head(dataset_usage_kpi)
+# Remove unnecesarry objects
+rm(day_set, peak_set, week_set, weekday_set, recency_set, network_set)
+
 ```
 
+# Week 2: Social network Analysis
+
+
+
+## Creating network
+
+
+```{r}
+graphs_week <- list()
+graphs_week <- NaN*seq(n_distinct(sample_cdr$mygroup))
+
+graphs_week <- 
+  lapply(
+    split(sample_cdr, as.factor(sample_cdr$mygroup)), 
+    graph_from_data_frame, 
+    directed = TRUE
+  )
+
+```
+
+## Creating network features
+
+Uitleg van verschillende centrality metrics
+
+Foto's van definites toevoegen
+
+```{r}
+
+# Degree (number of ties)
+deg_all_graphs <-  lapply(graphs_week, degree, mode = "all", loops = FALSE, normalized = FALSE)
+deg_in_graphs <- lapply(graphs_week, degree, mode="in", loops = FALSE, normalized = FALSE)
+deg_out_graphs <- lapply(graphs_week, degree, mode="out", loops = FALSE, normalized = FALSE)
+
+summary(deg_all_graphs)
+# plot network with degree as size of the nodes
+# V(net)$size=degree(net, normalized = FALSE)
+# plot.igraph(net,vertex.label=NA)
+```
+
+```{r}
+# calculate the "weighted degree": Summing up the edge weights of the adjacent edges for each vertex.
+strenght_all <- lapply(graphs_week, strength, mode = "all", loops = FALSE)
+strenght_in <- lapply(graphs_week, strength, mode = "in", loops = FALSE)
+strenght_out <- lapply(graphs_week, strength, mode = "out", loops = FALSE)
+```
+
+
+#### Closeness centrality of vertices
+
+```{r}
+# closeness
+# farness/peripherality of a node v is defined as the sum of its distances to all other nodes
+# Closeness (centrality based on distance to others in the graph)
+# Inverse of the node’s average geodesic distance to others in the network.
+
+net_closeness <- lapply(graphs_week, closeness, mode = "all", normalized = FALSE)
+summary(net_closeness)
+# closeness(graph = net, vids = V(net), mode = "all", normalized = TRUE)
+```
+
+```{r}
+# clustering coefficient.
+# P(two randomly selected friends of A are friends)
+# Transitivity measures the probability that the adjacent vertices of a vertex are connected. 
+# This is sometimes also called the clustering coefficient. (0 = star, 1 clique)
+net_transitiity <- 
+  lapply(graphs_week, transitivity, isolates = 'zero', type = 'localundirected')
+summary(net_transitiity)
+# transitivity(graph = net, isolates = 'zero', type="localundirected") # per node
+# transitivity(graph = net, type="average") # global
+
+# Count how many triangles a vertex is part of, in a graph, or just list the triangles of a graph.
+net_triangles <- lapply(graphs_week, count_triangles)
+summary(net_triangles)
+
+# Betweenness: defined by the number of geodesics (shortest paths) going through a vertex or an edge.
+# Betweenness centrality quantifies the number of times a node acts as a bridge along the shortest path between two other nodes
+# Betweenness (centrality based on a broker position connecting others)
+# Number of geodesics that pass through the node or the edge.
+# if to slow try estimate_betweeness
+net_betweenness <- lapply(graphs_week, betweenness, directed = FALSE, normalized = FALSE)
+
+# Eigenvector centrality: importance comes from degree level of other connected nodes
+# Values of the first eigenvector of the graph matrix.
+# Vertices with high eigenvector centralities are those which are connected to many other vertices which are, in turn, connected to many others (and so on)
+net_ev <- lapply(graphs_week, eigen_centrality, directed = TRUE)
+
+# 
+# # commands for reach or distance-weighted reach
+# # Reach: 2-reach and 3-reach is simply the proportion of nodes you can reach within 2 steps or 3 steps, respectively.
+# 
+# # 2-reach:
+# reach2=function(x){
+#   r=vector(length=vcount(x))
+#   for (i in 1:vcount(x)){
+#     n=neighborhood(x,2,nodes=i)
+#     ni=unlist(n)
+#     l=length(ni)
+#     r[i]=(l)/vcount(x)}
+#   r}
+# 
+# reach2(net)
+# 
+# # 3-reach:
+# reach3=function(x){
+#   r=vector(length=vcount(x))
+#   for (i in 1:vcount(x)){
+#     n=neighborhood(x,3,nodes=i)
+#     ni=unlist(n)
+#     l=length(ni)
+#     r[i]=(l)/vcount(x)}
+#   r}
+# 
+# reach3(net)
+# 
+# # ?
+# # distance-weighted reach:
+# dwreach=function(x){
+#   distances=shortest.paths(x) #create matrix of geodesic distances
+#   diag(distances)=1 # replace the diagonal with 1s
+#   weights=1/distances # take the reciprocal of distances
+#   apply(weights,1,sum) # sum for each node (row)
+# }
+# 
+# dwreach(net)
+
+
+# Google’s PageRank is a variant of the Eigenvector centrality measure for directed network
+net_pagerank <- 
+  lapply(graphs_week, page_rank, directed = TRUE, damping = 0.85 )
+
+```
+
+
+```{r}
+decay_factor <- function(days, active) {
+  exp(1)^(-days * 0.2)
+}
+```
+
+
+> todo:
+* filter basic, stat set op volledige begin week. bv week 17 is enkel zaterdag en zondag (1, 2 mei)
+* 
 
 

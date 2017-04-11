@@ -27,13 +27,13 @@ Things to cover in next weeks:
 * Documentation + report
 
 
-# Week 1: Exploration of CDR, pre-processing, making usage features
+# Part 1: Exploration of CDR, pre-processing, making usage features
 
 ## Workdirectory and packages/libraries
 
 Basic steps to set the workdirectory and load the necessary packages/libraries.
 
-```{r, message=FALSE, warning=FALSE}
+```{r, message=FALSE, warning=FALSE, include=FALSE}
 # get / set workdirectory to read in the datafile
 ################################################################################################################
 setwd(dir = "/Users/oliver.belmans/Data/R_workdirectory/Thesis")
@@ -41,8 +41,16 @@ getwd()
 
 # load packages/libraries used in the analysis
 ################################################################################################################
-pkg <- c("tidyverse", "igraph", "data.table", "dtplyr")
-lapply(pkg, require, character.only = TRUE )
+pkg <- c("tidyverse", "igraph", "data.table", "dtplyr", "broom", "purrr", "ggplot2")
+sapply(pkg, require, character.only = TRUE )
+
+# # Setting up the parallel computing environment => system.time =:> seems slower on my mac
+# # https://www.r-bloggers.com/how-to-go-parallel-in-r-basics-tips/
+# ################################################################################################################
+# no_cores <- detectCores() - 1
+# # Initiate cluster
+# cl <- makeCluster(no_cores)
+# stopCluster(cl)
 ```
 
 ## Read in data (or make dummy dataset)
@@ -57,30 +65,221 @@ The test CDR dataset only contain 100 record, whereas each record represents an 
 cdr1 <- fread(input = "PREPAID_CDR_ANONYM_201005.txt", header = TRUE, sep = ",", stringsAsFactors = FALSE)
 # cdr2 <- fread(input = "PREPAID_CDR_ANONYM_201006.txt", header = TRUE, sep = ",", stringsAsFactors = FALSE)
 dim(cdr1)
+cdr1$A_NUMBER <- as.character(cdr1$A_NUMBER)
+cdr1$B_NUMBER <- as.character(cdr1$B_NUMBER)
 
 ```
 
-## Pre-process (not clear with test set)
+## Pre-process 
 
-> A few question to keep in mind for the pre-processing
-> 
-* Outlier?
-* Filter in-network customers for clustering
-* Question: how to label new customers? Since those are of interest in the sequence mining
+Responds to following questions:
+* Removal of noise or outliers.
+* Collecting necessary information to model or account for noise.
+* Strategies for handling missing data fields.
+*Accounting for time sequence information and known changes.
+
+### Collecting dataset information
+
+Our data contains of only few columns and dimension is of size:
+```{r}
+# 
+cdr1[1:5,1:6]
+```
+
+* A_NUMBER: identifier of caller
+* B_NUMBER: identifier of callee
+* CALL_START_DT: date when call took place
+* CALL_START_TM: time when call took place
+* CALL_ACTUAL_DURATION is expressed in seconds.
+* TARGER_AREA: indicates if destiny of the call is in the providers network
+
+
+### Remove noise or outliers.
+
+#### Detect outliers based on call duration
+
+What does our dataset looks like, bases on call durations. Use descriptive statistics such as quantiles, mean, etc. to take a first look:
+* conclusion: a wide range, with a high maximum.
+* Power law distributions: is very skewed, with a long right tail.
+* Excluding outliers based on mean +- 3x st. dev, or 1.5* IQR would expect a normal distribution.
+* Therefor, try log on the individual columns or scale?
+
+> todo: exlude outliers on log or not? i find  extreme upper point normal (1 hour calls)
+
+```{r}
+# summary of call duration
+tidy(summary(cdr1$CALL_ACTUAL_DURATION))
+# check with visual
+hist(cdr1$CALL_ACTUAL_DURATION, prob=TRUE, main="Original distribution" , col=3, xlab = "call duration in seconds")
+# check with log histogram, more normal but there is a pike with short call times
+hist(log(cdr1$CALL_ACTUAL_DURATION), prob=TRUE, main="Log call duration distribution" , col=4, xlab = "Log(call duration in seconds)")
+plot(density(log(cdr1$CALL_ACTUAL_DURATION)))
+plot(density((cdr1$CALL_ACTUAL_DURATION)))
+
+```
+
+More in-depth focus on call duration (power law distribution)
+
+```{r}
+# long tail, so check the tail
+# get boxplots stats: containing the extreme of the lower whisker, the lower ‘hinge’, the median, the upper ‘hinge’ and the extreme of the upper whisker.
+stats_boxplot <- boxplot.stats(cdr1$CALL_ACTUAL_DURATION)$stats
+stats_boxplot
+# Look at density of the long tail.
+# cdr1$CALL_ACTUAL_DURATION[cdr1$CALL_ACTUAL_DURATION >= stats_boxplot[5]] %>% hist()
+
+# addes maximum as endpoint for the breaks
+cdr1$breaks <- cut(cdr1$CALL_ACTUAL_DURATION, breaks=c(stats_boxplot, max(cdr1$CALL_ACTUAL_DURATION)) ,labels=F, include.lowest = T, right = T)
+# density plot on breaks
+filter(cdr1, CALL_ACTUAL_DURATION <= 20) %>%
+  ggplot(aes(x = CALL_ACTUAL_DURATION )) +
+  geom_histogram(breaks = seq(0, 20, 1))
+
+```
+
+
+* Valid observations: the extreme call durations are valid in my opinion. Calls of duration 3600 seconds are just 1 hour calls. That is quite normal.
+* Invalid observations: call with duration between 1-7 seconds are abnormal.  Calls with duration less or equal than 7 seconds are assumed to have been accidentally dropped and are ignored.
+
+#### Excluded data with a call duration threshold
+
+Here, look at how many data will be thrown away if some threshold is applied.
+
+```{r}
+# Filter CDR set
+########################################################################################
+# Outliers are considered as datapoints which are not within 1.5 x IQR
+total <- nrow(cdr1)
+
+excluded <- data.frame(call_time = NA,   excluded = NA,  total = NA,  perc_excluded = NA)
+summary_set <- NULL
+cumsum_exclude = 0
+
+for(call_time  in 1:10){
+  include <- nrow(cdr1[cdr1$CALL_ACTUAL_DURATION > call_time])
+  exclude <- (total - include) / total *100
+  excluded <- rbind(na.omit(excluded), data.frame(call_time, include, total, exclude))
+  summary_set <- rbind(summary_set, broom::tidy(summary(cdr1$CALL_ACTUAL_DURATION[cdr1$CALL_ACTUAL_DURATION > call_time])))
+}
+
+par(mfrow=c(2,1))
+plot(summary_set$median, ylab = "median call duration",  xlab = "minimal threshold of call duration (seconds)")
+plot(excluded$exclude, ylab = "data excluded (%)", xlab = "minimal threshold of dall duration (seconds)")
+par(mfrow = c(1,1))
+
+# summary table of call duration excluding based on call duration from 1 to 10
+summary_set
+excluded
+```
+
+This table (above) give insights how much data will be thrown away when a certain threshold of minimal of call duration is applied.
+* minimal call time above 5 seconds implies that 21,9 % of the original data is thrown away as invalid observations.
+* minimal call time above 7 seconds implies that 25.3 % of the original data is thrown away as invalid observations.
+
+
+```{r}
+# drop calls under 5 seconds -> this implies wrong calls or perhaps voicemail calls
+cdr1 <-
+  filter(cdr1, CALL_ACTUAL_DURATION > 5)
+```
+
+#### Detect outliers based on calls (incoming or outgoing calls)
+
+* During pre-processing of the CDR data, excluded the service numbers:
+* one way to detect them is look at incoming calls, and exclude the +3 stan dev from the mean number of incoming calls
+
+```{r}
+# calculate number of incoming calls for a month per B_NUMBER
+incoming_calls <-
+  cdr1 %>%
+  group_by(B_NUMBER) %>%
+  summarise(nr = n()) %>%
+  arrange(desc(nr))
+
+# calculate number of incoming calls for a month per A_NUMBER
+outgoing_call <-
+  cdr1 %>%
+  group_by(A_NUMBER) %>%
+  summarise(nr = n()) %>%
+  arrange(desc(nr))
+
+# INCOMING CALL
+# head(incoming_calls)
+# # get summary stats
+# summary(incoming_calls$nr)
+# plot(density(incoming_calls$nr))
+# plot(density(log(incoming_calls$nr)))
+# 
+# # get mean
+# mean(incoming_calls$nr)
+# # get standard dev
+# sd(incoming_calls$nr)
+# # calculate tripple sigma
+# sigma3 <- ceiling(mean(incoming_calls$nr) + 3*sd(incoming_calls$nr))
+# sigma
+# # Q3 + interquartile *1.5
+# outlier_quantile <- boxplot.stats(incoming_calls$nr)$out
+# summary(outlier_quantile)
+# # only 1 call made: valid or invalid?
+# hist(incoming_calls$nr[incoming_calls$nr <= sigma3])
+# hist(outlier_quantile)
+# plot(x = 1:100, y = head(incoming_calls$nr, 100), type = "b")
+# head(incoming_calls)
+# # exclude 3671731
+# 
+# # OUTGOING CALLS
+# plot(x = 1:100, y = head(outgoing_call$nr, 100), typ ="b")
+# summary(outgoing_call$nr)
+# summary(outgoing_call$unique_out)
+# head(outgoing_call)
+
+```
+
+* Outgoing call: valid observations, order or max 40 made calls per month is still normal for highly usage.
+* Incoming calls: one particual invalid observations of 637 incoming calls (in one month). That is really extreme. 
+* Excluding this last number
+
+#### Exclude outliers
+
+exclude all customers that have either incoming-outgoings calls above 1400 calls a month.
+
+```{r}
+
+
+nrow(cdr1)
+# 23932953
+cdr1 <- 
+  filter(cdr1, 
+         !B_NUMBER %in% c(filter(incoming_calls, nr > 2000)$B_NUMBER, filter(outgoing_call, nr > 2000)$A_NUMBER), 
+         !A_NUMBER %in% c(filter(incoming_calls, nr > 2000)$B_NUMBER, filter(outgoing_call, nr > 2000)$A_NUMBER)
+  )
+
+nrow(cdr1)
+(1 - ( 24987280 / 25002277)) * 100
+
+# 0.05 % thrown away
+```
+
+### Removing customers who call themself
+
+```{r}
+cdr1_breakdown <-
+  filter(cdr1_breakdown, A_NUMBER != B_NUMBER)
+```
 
 
 ## Creating breakdown structure
 
 Next step is solving the date format, since the usage features will need a breakdown structure for calculations (based on days, houres, peak houres,..)
 
+
 ```{r}
 # Variable manipulations
 ################################################################################################################
 
-
 ## CALL_START_DT to date format
 ## Create extra date/time variables like week-, daynumber, houres
-sample_cdr <-
+cdr1_breakdown <-
   cdr1 %>% 
   mutate(
     CALL_START_DT = as.POSIXct(CALL_START_DT, "%d%b%Y", tz = "GMT"),
@@ -89,27 +288,64 @@ sample_cdr <-
     DAY_NR = format(CALL_START_DT_TM, "%u"),
     DAY = format(CALL_START_DT_TM, "%a"),
     HOUR = as.integer(format(CALL_START_DT_TM, "%H")),
-    PEAK_HOUR = ifelse(HOUR >= 8 & HOUR <= 18, "PEAK", "NON_PEAK"),
+    PEAK_HOUR = ifelse(HOUR >= 9 & HOUR <= 19, "PEAK", "NON_PEAK"),
     WEEKDAYS = ifelse(DAY_NR %in% c(6,7), "WEEKEND", "WEEK")
   ) 
 
-# print head
-head(sample_cdr)
-sample_cdr <- sample_frac(group_by(sample_cdr, WEEK_NR), size = 0.1)
+hist(cdr1_breakdown$HOUR)
+abline(v = "9", col = "red")
+abline(v = "19", col = "red")
+```
 
-# Get max day value of a certain inteval. I choose grouping of weeks
-sample_cdr <- 
-  sample_cdr %>% 
+First, explore our dataset and look for incomplete week sets.
+
+* How many observations do we have on weekly bases
+* conclusion: we should only take complete weeks into account
+
+```{r}
+# frequency
+tidy(table(cdr1_breakdown$WEEK_NR)) %>% 
+  ggplot(., aes(x = Var1, y = Freq/1000)) + geom_bar(stat = "identity") + ylab("number of observations (k)")
+# first week 17 is not complete
+```
+
+```{r}
+# Create a sequence interval of the time ordered data
+# I choose grouping of 2 weeks
+# week 18 - 19 => togehter in the same group nr 18
+# week 20 - 21 => together in the same group nr 20
+cdr1_breakdown <- 
+  cdr1_breakdown %>% 
   mutate(
-    mygroup = ceiling(as.numeric(WEEK_NR) / 2) *2) %>%
+    mygroup = floor(as.numeric(WEEK_NR) / 2) *2) %>% # group 2 weeks in one
   group_by(mygroup) %>%
+  # add max date of the 2 week intervalt
   mutate(
     max_date = max(CALL_START_DT)
   ) %>% ungroup 
 
 ```
 
-## Create the usage metrics based on the breakdown structure (day, peak_hour, weekday)
+
+## Get a sample of the data to continue with the overall process
+
+```{r}
+# take full set
+sample_cdr <- cdr1_breakdown
+
+# dim(cdr1_breakdown)
+# take sample data
+# do this with the smalles granularity, thus sample % on hour.
+
+# take sample
+# sample_cdr <- sample_frac(
+#   group_by(cdr1_breakdown, HOUR), size = 0.05)
+# check dimension
+# dim(sample_cdr)
+
+```
+
+## Feature engineering
 
 Main idea is to generate usage features for customers in the dataset. However, this needs to be done at regular intervals, taking a sequence static observations at multiple time points and using these intervals for feature extraction. I choose to do this per week, so change of behavior can be tracked by week. I will slice the data per week and create aggregated records of subscribers who where active during that week. So a customer who's active every week will contains +- 16 aggregated records (final dataset contains 4 months, each month +- 4 weeks).
 
@@ -119,9 +355,10 @@ I choose to do feature extraction for these features:
 * ave_call_time = average call time
 * total_call_time = sum of all call times
 
-#### Aggregated by 2 week
+#### Adding additional features
 
 This steps generates features of the usage of a customer such as number of calls during the 2 week interval, but also more in detail like per day, per (non) peak hours, week or weekend days. Also, for the same breakdown structure the duration of calls is aggregated.
+
 
 ```{r}
 # Variable creation based on usage
@@ -134,10 +371,16 @@ usage_stats <- function(dataset, group1, group2, ...) {
     group_by_(group1, group2, ...) %>%
     summarise(
       nr_call= n(),
+      nr_unique_calls = length(unique(B_NUMBER)),
       ave_call_time = mean(CALL_ACTUAL_DURATION),
       total_call_time = sum(CALL_ACTUAL_DURATION)
     ) %>%
-    gather_(key_col = "variable", value_col = "value", gather_cols = c("nr_call", "ave_call_time", "total_call_time")) %>%
+    gather_(key_col = "variable", value_col = "value", 
+            gather_cols = c(
+              "nr_call", 
+              "nr_unique_calls",
+              "ave_call_time", 
+              "total_call_time")) %>%
     unite_("temp", c("variable", ...)) %>%
     spread_("temp", "value", fill = 0) %>%
     ungroup()
@@ -151,8 +394,8 @@ week_set <-
 # number of outbound calls per day over 2 weeks
 # average outbound call duration per day over 2 weeks
 # total call time per day over 2 weeks
-day_set <- 
-  usage_stats(dataset = sample_cdr, "mygroup", "A_NUMBER", "DAY")
+# day_set <- 
+# usage_stats(dataset = sample_cdr, "mygroup", "A_NUMBER", "DAY")
 # number of outbound calls in (non) peak hours 
 # average outbound call duration in (non) peak hours 
 # total call time in (non) peak hours 
@@ -193,68 +436,280 @@ plot(x = 0:13, y =  do.call(decay_factor, args = list(0:13, 0.4)), type = "b", x
 
 ```
 
+Calculate the recency or activity of each individual call
+* used as edge weight in social network analysis
+
 ```{r}
-# Calculate recency of last activity for a customer PER mygroup 
-recency_set <- 
-  sample_cdr %>% 
-  group_by(mygroup, A_NUMBER) %>%
-  summarise(diffday = as.integer(difftime(max_date,CALL_START_DT, units = "days"))) %>%
-  mutate(recency = decay_factor(diffday, 0.4)) %>%
-  ungroup()
 
 # Add recency PER each call based on the 2 week interval
 sample_cdr <-
   sample_cdr %>%
   mutate(
     diffday = as.integer(difftime(max_date,CALL_START_DT, units = "days")),
-    weigth = decay_factor(diffday, 0.4))
-
+    weight = decay_factor(diffday, 0.3))
 ```
 
+* used to calculate latest activity of a caller and added as customer variable
+
+```{r}
+# Calculate recency of last activity for a customer PER mygroup 
+# get minimum of diffday for each customer
+recency_set <- 
+  sample_cdr %>%
+  group_by(mygroup, A_NUMBER) %>%
+  summarise(
+    # diffday_min = min(diffday),
+    recency_min = min(weight)) %>%
+  ungroup %>% unique
+```
+
+
+Merge those sets to one dataset containing all the call variables.
 
 ```{r}
 
 # merge dataset to a wide format
 dataset_usage_kpi <- 
-  Reduce(left_join, list(week_set, day_set, peak_set, weekday_set, network_set, recency_set)) 
+  Reduce(left_join, list(week_set, peak_set, weekday_set, network_set, recency_set)) 
+
+rm(week_set, peak_set, weekday_set, network_set, recency_set)
+
+```
+
+## Final dataset with the usage features
+
+Add percentages to all the call nr and call time variables
+
+```{r}
 
 # add percentage features for number of call per X and total call time per X
 dataset_usage_kpi <-
   dataset_usage_kpi %>%
   mutate_at(vars(starts_with("nr_call_")), funs("perc" = . / nr_call)) %>%
-  mutate_at(vars(starts_with("total_call_time_")), funs("perc" = . / total_call_time))
+  mutate_at(vars(starts_with("total_call_time_")), funs("perc" = . / total_call_time)) 
+# %>%
+# mutate_at(vars(starts_with("nr_unique_")), funs("perc" = . / nr_unique))
 
-```
-
-#### Final dataset with the usage features
-
-Lastly, join all the dataset so it contains per customer per week a wide format with all the usage features
-
-```{r}
 # print head full dataset with usage features
 head(dataset_usage_kpi)
-# Remove unnecesarry objects
-rm(day_set, peak_set, week_set, weekday_set, recency_set, network_set)
+dim(dataset_usage_kpi)
 
 ```
 
-# Week 2: Social network Analysis
+## Add RFM variables
+
+```{r}
+
+dataset_usage_kpi <- 
+  dataset_usage_kpi %>%
+  group_by(mygroup) %>%
+  mutate(global_nr_calls = sum(nr_call),
+         global_time_call = sum(total_call_time),
+         frequency_perc = nr_call / global_nr_calls,
+         mon_value_perc = total_call_time / global_time_call) %>%
+  select(-global_nr_calls, -global_time_call) %>%
+  ungroup()
 
 
+```
+
+
+
+# Part 2: Social network Analysis
 
 ## Creating network
+```{r, warning=FALSE}
+library(doParallel)  
+no_cores <- detectCores() - 1  
+cl <- makeCluster(no_cores, type="FORK")  
+# registerDoParallel(cl)  # only when using foreach
+
+graphs_per_group <- 
+  parLapply(cl, 
+            split(
+              select(sample_cdr, A_NUMBER, B_NUMBER, mygroup),
+              sample_cdr$mygroup),
+            graph_from_data_frame,  vertices = NULL, directed = TRUE )
+stopCluster(cl)
+
+# graphs_per_group <- 
+#   lapply(
+#     split(
+#       select(sample_cdr, A_NUMBER, B_NUMBER, mygroup),
+#       sample_cdr$mygroup), 
+#     graph_from_data_frame, vertices = NULL,
+#     directed = TRUE
+#   )
+
+summary(graphs_per_group)
+
+# Creating unique list of vertices 
+vertices <-
+  unique(select(sample_cdr, mygroup, A_NUMBER))
+vertices$mygroup <- as.character(vertices$mygroup)
+```
+
+## Example plot and network features
++ Decompose the graphs into interconnected graphs
+In order to detect noise clusters, we iterate over all clusters and determine their sizes.
+Clusters with less than a minimum amount of nodes will have all their nodes excluded. But before this, we need to make sure we don't exclude high profile customer? do we need this
+
+```{r}
+g <- simplify(
+  graph.compose(
+    graph.ring(10),
+    graph.star(5, mode = "undirected")
+  )
+) + edge("7", "8") + edge("2", "3")
+
+plot(g)
+clusters(g)
+g_decom <- decompose(g)
+
+# no impact from unconnected graphs 
+betweenness(g)
+lapply(g_decom, betweenness)
+
+# impact from unconnected graphs
+closeness(g)
+lapply(g_decom, closeness)
+
+# no impact
+degree(g)
+lapply(g_decom, degree)
+
+# impact
+page_rank(g)$vector
+lapply(g_decom, page_rank) %>% lapply(., function(x) x$vector)
+
+# no impact
+count_triangles(g)
+lapply(g_decom, count_triangles)
+
+component_distribution(g, mul.size = TRUE)
+is_connected(g)
+components(g, mode = "strong")
+# ----------------------------------------------------------------------
+
+# # Look if network is fully connected
+# network_connected <- lapply(graphs_per_group, is_connected)
+# 
+# # look at size of each cluster in the network
+# # For directed graphs, mode=STRONG 
+# # calculates the strongly connected components, mode=WEAK calculates the weakly 
+# # connected components (by practically ignoring the edge directions)
+cluster_network <-
+  lapply(graphs_per_group, components, mode = "weak")
+
+# Which A_NUMBERS are in those clusters
+cluster_membership <-
+  lapply(cluster_network, function(x) x$membership) %>%
+  lapply(as.data.frame) %>%
+  lapply(., setNames, nm = "membership") %>%
+  lapply(., rownames_to_column,  var = "NUMBER") %>%
+  bind_rows(.id = "mygroup") %>%
+  group_by(mygroup, membership) %>%
+  mutate(csize = n()) %>%
+  ungroup()
+
+# summarise cluster size to see how big each cluster is, meaning how many clusters of a size x are there
+cluster_size_sum <-
+  cluster_membership %>%
+  group_by(mygroup, csize) %>%
+  summarise(nr_per_cluster = n_distinct(membership)) %>% 
+  mutate(total_cust = nr_per_cluster * csize,
+         cumsum_total_cust = cumsum(total_cust) / sum(total_cust))
+```
+
+Compairing the different subgraphs, for how much % do they represent the data.
+```{r}
+ggplot(cluster_size_sum, aes( x = log(csize), y = cumsum_total_cust)) +
+  geom_point() + geom_line() + 
+  # coord_cartesian(xlim = c(0, 10)) +
+  # scale_x_continuous(breaks = seq(0,20,1), labels = seq(0,20,1)) +
+  facet_wrap(~mygroup, scales = "free")
+```
 
 
 ```{r}
-graphs_week <- list()
-graphs_week <- NaN*seq(n_distinct(sample_cdr$mygroup))
 
-graphs_week <- 
-  lapply(
-    split(sample_cdr, as.factor(sample_cdr$mygroup)), 
-    graph_from_data_frame, 
-    directed = TRUE
-  )
+# # Look at top of clusters and their size.
+# # Enormous spike at cluster size. Lets check this out
+top_n(cluster_size_sum, n = 1, wt = csize)
+
+# Take all vertices of the highest connect subgraph
+# Take this list to take the subset of customers to calculate the usage dataset
+list_top_clusters <-
+  cluster_membership %>% 
+  select(mygroup, NUMBER,  csize) %>%
+  group_by(mygroup) %>%
+  filter(csize == max(csize)) %>%
+  ungroup()
+
+
+# TAKE LARGEST SUBGRAPH FUNCTION
+giant.component <- function(graph, ...) {
+  cl <- components(graph, ...)
+  induced_subgraph(graph, which(cl$membership == which.max(cl$csize)))
+  
+}
+# TAKE LARGEST SUBGRAPH
+largest_graphs_per_group <- lapply(graphs_per_group, giant.component)
+
+# Check dimension of graph
+sapply(largest_graphs_per_group, gsize)
+
+# Make A_NUMBER selection of the largest subgraph
+# the NUMBERS of the subgraph are A_ & B_NUMBERS
+# therefor, take a innerjoin per group to keep the A_NUMBERS in the largest subgraph
+
+cdr1_breakdown$mygroup <- as.character(cdr1_breakdown$mygroup)
+
+clear_sample <- 
+  inner_join(list_top_clusters,cdr1_breakdown, by = c("mygroup" = "mygroup", "NUMBER" = "A_NUMBER"))
+
+
+
+```
+
+Are those high monetary value customers, meaning they represent a high volume or frequency of calls?
+
+```{r}
+
+
+# split largest network from the rest
+
+gg <- induced_subgraph(graphs_per_group[['18']], vids = list_temp)
+
+
+# check how many incoming edges it has
+gg_deg_in_graphs <-
+  degree(gg,  mode="in", loops = FALSE, normalized = FALSE) %>%
+  as.data.frame() %>%
+  rownames_to_column(., var = "B_NUMBER")
+gg_deg_out_graphs <-
+  degree(gg,  mode="out", loops = FALSE, normalized = FALSE) %>%
+  as.data.frame() %>%
+  rownames_to_column(., var = "A_NUMBER")
+
+```
+
+
+
+## Help function to convert network features into dataframe
+
+todo: probeer simplify te gebruiken om multiple edges om te zetten naar weight
+
+```{r}
+return_dataset <- function(list_metrics, var_name)
+{
+  lapply(list_metrics, as.data.frame) %>%
+    lapply(., select, 1) %>%
+    lapply(., setNames, nm = var_name) %>% 
+    lapply(., rownames_to_column,  var = "A_NUMBER") %>% 
+    bind_rows(.id = "mygroup") %>%
+    right_join(., vertices)
+}
 
 ```
 
@@ -263,124 +718,462 @@ graphs_week <-
 Uitleg van verschillende centrality metrics
 
 Foto's van definites toevoegen
+plot degree distribution of network
+
+#### Degree: just number of in & out
+doest not factor in distance or weight
+
 
 ```{r}
-
 # Degree (number of ties)
-deg_all_graphs <-  lapply(graphs_week, degree, mode = "all", loops = FALSE, normalized = FALSE)
-deg_in_graphs <- lapply(graphs_week, degree, mode="in", loops = FALSE, normalized = FALSE)
-deg_out_graphs <- lapply(graphs_week, degree, mode="out", loops = FALSE, normalized = FALSE)
+deg_all_graphs <-  
+  return_dataset(
+    lapply(graphs_per_group, degree, mode = "all", loops = FALSE, normalized = FALSE),
+    "degree_all") 
+deg_in_graphs <- 
+  return_dataset(
+    lapply(graphs_per_group, degree, mode="in", loops = FALSE, normalized = FALSE),
+    "degree_in")
+deg_out_graphs <- 
+  return_dataset(
+    lapply(graphs_per_group, degree, mode="out", loops = FALSE, normalized = FALSE),
+    "degree_out")
 
-summary(deg_all_graphs)
-# plot network with degree as size of the nodes
-# V(net)$size=degree(net, normalized = FALSE)
-# plot.igraph(net,vertex.label=NA)
+# summary(deg_all_graphs)
+# check ok
+
 ```
+
+#### Strength or weighted vertex degree
+* Summing up the edge weights of the adjacent edges for each vertex.
+* better estimate for relevance of nodes since high number indicates more recent activities
+* todo: normalize it
 
 ```{r}
 # calculate the "weighted degree": Summing up the edge weights of the adjacent edges for each vertex.
-strenght_all <- lapply(graphs_week, strength, mode = "all", loops = FALSE)
-strenght_in <- lapply(graphs_week, strength, mode = "in", loops = FALSE)
-strenght_out <- lapply(graphs_week, strength, mode = "out", loops = FALSE)
+# strenght_all <- lapply(graphs_per_group, strength, mode = "all", loops = FALSE) 
+# strenght_in <- lapply(graphs_per_group, strength, mode = "in", loops = FALSE)
+# strenght_out <- lapply(graphs_per_group, strength, mode = "out", loops = FALSE)
 ```
 
 
 #### Closeness centrality of vertices
 
 ```{r}
-# closeness
+# -> intensive computing
+# closeness: shortest path / nodes, vanuit 1 enkele node naar andere
 # farness/peripherality of a node v is defined as the sum of its distances to all other nodes
 # Closeness (centrality based on distance to others in the graph)
 # Inverse of the node’s average geodesic distance to others in the network.
+# The more central a node is, the lower its total distance to all other nodes
+net_closeness_in <-   
+  return_dataset(
+    lapply(graphs_per_group, estimate_closeness, mode = "in", cutoff = 8,  normalized = FALSE),
+    "closeness_in")
+net_closeness_out <- 
+  return_dataset(
+    lapply(graphs_per_group, estimate_closeness, mode = "out", cutoff = 8, normalized = FALSE),
+    "closeness_out")
 
-net_closeness <- lapply(graphs_week, closeness, mode = "all", normalized = FALSE)
-summary(net_closeness)
+
 # closeness(graph = net, vids = V(net), mode = "all", normalized = TRUE)
+# check ok
 ```
+
+
+#### Transitivity of a graph
 
 ```{r}
 # clustering coefficient.
 # P(two randomly selected friends of A are friends)
 # Transitivity measures the probability that the adjacent vertices of a vertex are connected. 
 # This is sometimes also called the clustering coefficient. (0 = star, 1 clique)
-net_transitiity <- 
-  lapply(graphs_week, transitivity, isolates = 'zero', type = 'localundirected')
-summary(net_transitiity)
-# transitivity(graph = net, isolates = 'zero', type="localundirected") # per node
-# transitivity(graph = net, type="average") # global
+take_transitivity <- function(graph, ...) {
+  trans <- transitivity(graph, type = 'localundirected', isolates = 'zero')
+  get_names <- V(graph)$name
+  data.frame(A_NUMBER = get_names, transitivity = trans)  
+}
 
+net_transitivity <- 
+  lapply(graphs_per_group, simplify) %>%
+  lapply(., take_transitivity) %>%
+  bind_rows(.id = "mygroup") %>%
+  right_join(., vertices)
+
+#check ok
+```
+
+#### Find triangles in graphs
+
+```{r}
 # Count how many triangles a vertex is part of, in a graph, or just list the triangles of a graph.
-net_triangles <- lapply(graphs_week, count_triangles)
-summary(net_triangles)
+take_triangles <- function(graph, ...) {
+  count_tri <- count_triangles(graph, ...)
+  get_names <- V(graph)$name
+  data.frame(A_NUMBER = get_names, triangles = count_tri)  
+}
+net_triangles <- 
+  lapply(graphs_per_group, take_triangles) %>%
+  bind_rows(.id = "mygroup") %>%
+  right_join(., vertices)
+
+# check ok
+```
+
+#### Vertex and edge betweenness centrality
+
+```{r}
+# -> very intensive computing
 
 # Betweenness: defined by the number of geodesics (shortest paths) going through a vertex or an edge.
 # Betweenness centrality quantifies the number of times a node acts as a bridge along the shortest path between two other nodes
 # Betweenness (centrality based on a broker position connecting others)
 # Number of geodesics that pass through the node or the edge.
 # if to slow try estimate_betweeness
-net_betweenness <- lapply(graphs_week, betweenness, directed = FALSE, normalized = FALSE)
+net_betweenness <- 
+  return_dataset(
+    lapply(graphs_per_group, simplify) %>%
+      lapply(., estimate_betweenness, directed = TRUE, cutoff = 8),
+    "betweenness")
 
-# Eigenvector centrality: importance comes from degree level of other connected nodes
-# Values of the first eigenvector of the graph matrix.
-# Vertices with high eigenvector centralities are those which are connected to many other vertices which are, in turn, connected to many others (and so on)
-net_ev <- lapply(graphs_week, eigen_centrality, directed = TRUE)
-
-# 
-# # commands for reach or distance-weighted reach
-# # Reach: 2-reach and 3-reach is simply the proportion of nodes you can reach within 2 steps or 3 steps, respectively.
-# 
-# # 2-reach:
-# reach2=function(x){
-#   r=vector(length=vcount(x))
-#   for (i in 1:vcount(x)){
-#     n=neighborhood(x,2,nodes=i)
-#     ni=unlist(n)
-#     l=length(ni)
-#     r[i]=(l)/vcount(x)}
-#   r}
-# 
-# reach2(net)
-# 
-# # 3-reach:
-# reach3=function(x){
-#   r=vector(length=vcount(x))
-#   for (i in 1:vcount(x)){
-#     n=neighborhood(x,3,nodes=i)
-#     ni=unlist(n)
-#     l=length(ni)
-#     r[i]=(l)/vcount(x)}
-#   r}
-# 
-# reach3(net)
-# 
-# # ?
-# # distance-weighted reach:
-# dwreach=function(x){
-#   distances=shortest.paths(x) #create matrix of geodesic distances
-#   diag(distances)=1 # replace the diagonal with 1s
-#   weights=1/distances # take the reciprocal of distances
-#   apply(weights,1,sum) # sum for each node (row)
-# }
-# 
-# dwreach(net)
-
-
-# Google’s PageRank is a variant of the Eigenvector centrality measure for directed network
-net_pagerank <- 
-  lapply(graphs_week, page_rank, directed = TRUE, damping = 0.85 )
-
+# check ok
 ```
 
+
+#### Pagerank
 
 ```{r}
-decay_factor <- function(days, active) {
-  exp(1)^(-days * 0.2)
-}
+# need different return_dataset function
+# Google’s PageRank is a variant of the Eigenvector centrality measure for directed network
+
+net_pagerank <- 
+  lapply(graphs_per_group, page_rank, directed = TRUE, damping = 0.85) %>%
+  map(., 1) %>%
+  lapply(., as.data.frame) %>%
+  lapply(., setNames, nm = "pagerank") %>% 
+  lapply(., rownames_to_column,  var = "A_NUMBER") %>% 
+  bind_rows(.id = "mygroup") %>%
+  right_join(., vertices)
+
+
+# check ok
 ```
 
 
-> todo:
-* filter basic, stat set op volledige begin week. bv week 17 is enkel zaterdag en zondag (1, 2 mei)
-* 
+## Putting it all together
+
+```{r}
+
+dataset_usage_kpi$mygroup <- as.character(dataset_usage_kpi$mygroup)
+dataset_usage_kpi$A_NUMBER <- as.character(dataset_usage_kpi$A_NUMBER)
+
+finalset <- 
+  Reduce(left_join, 
+         list(
+           dataset_usage_kpi,
+           deg_all_graphs, 
+           deg_in_graphs, 
+           deg_out_graphs,
+           net_betweenness,
+           net_closeness_in,
+           net_closeness_out,
+           net_pagerank,
+           net_triangles,
+           net_transitivity
+         ))
+
+# fill NA of transitivity or triangles with 0
+
+finalset[is.na(finalset)] <- 0
+
+rm(deg_all_graphs,deg_in_graphs, deg_out_graphs, net_betweenness, net_closeness_in,
+   net_closeness_out, net_pagerank, net_triangles, net_transitivity)
+
+```
+
+
+# BACKUP STEP: finalset vanaf hier
+
+
+# Part 3: Cluster
+Make unique rownmames of mygroup + A_NUMBER
+```{r}
+
+# Make a rownames of the group + A-NUMBER
+finalset <- 
+  finalset %>%
+  unite(col = key, mygroup, A_NUMBER, sep = "_", remove = FALSE)
+
+class(finalset) <- "data.frame"
+row.names(finalset) <- finalset$key
+finalset <- finalset[,-c(1:3)]
+
+
+# Remove irrelevant features
+clusterset <- 
+  dplyr::select(finalset,
+                nr_unique_calls,
+                recency_min,
+                frequency_perc,
+                mon_value_perc,
+                ave_call_time,
+                nr_call_NON_PEAK_perc,
+                nr_call_PEAK_perc,
+                nr_call_WEEK_perc,
+                nr_call_WEEKEND_perc,
+                nr_call_HOME_NET_perc,
+                nr_call_OTHER_NET_perc,
+                total_call_time_NON_PEAK_perc,
+                total_call_time_PEAK_perc,
+                total_call_time_WEEK_perc,
+                total_call_time_WEEKEND_perc,
+                total_call_time_HOME_NET_perc,
+                total_call_time_OTHER_NET_perc,
+                ave_call_time_NON_PEAK,
+                ave_call_time_PEAK,
+                ave_call_time_WEEK,
+                ave_call_time_WEEKEND,
+                ave_call_time_HOME_NET,
+                ave_call_time_OTHER_NET,
+                degree_all,
+                degree_in,
+                degree_out,
+                betweenness,
+                closeness_in,
+                closeness_out,
+                pagerank,
+                triangles,
+                transitivity
+  )
+
+# dont go with percentages, go with total call time instead
+clusterset2 <- 
+  dplyr::select(finalset,
+                nr_unique_calls,
+                recency_min,
+                total_call_time,
+                ave_call_time,
+                nr_call_NON_PEAK,
+                nr_call_PEAK,
+                nr_call_WEEK,
+                nr_call_WEEKEND,
+                nr_call_HOME_NET,
+                nr_call_OTHER_NET,
+                total_call_time_NON_PEAK,
+                total_call_time_PEAK,
+                total_call_time_WEEK,
+                total_call_time_WEEKEND,
+                total_call_time_HOME_NET,
+                total_call_time_OTHER_NET,
+                ave_call_time_NON_PEAK,
+                ave_call_time_PEAK,
+                ave_call_time_WEEK,
+                ave_call_time_WEEKEND,
+                ave_call_time_HOME_NET,
+                ave_call_time_OTHER_NET,
+                degree_all,
+                degree_in,
+                degree_out,
+                betweenness,
+                closeness_in,
+                closeness_out,
+                pagerank,
+                triangles,
+                transitivity
+  )
+
+```
+
+
+### Scale everything between value of [0-1]
+
+```{r}
+# unitization with zero minimum: make  function
+range01 <- function(x){(x-min(x))/(max(x)-min(x))}
+
+# check with features need to be scaled, max value is not 1
+scale_features <- names(clusterset)[apply(clusterset, 2, function(x) max(x) != 1)]
+# make set
+# summary(clusterset)
+clusterset_scaled <- 
+  clusterset %>%
+  mutate_each_(funs((.-min(.))/(max(.)-min(.))), scale_features)
+# summary(clusterset_scaled)
+
+# summary(clusterset2)
+# check with features need to be scaled, max value is not 1
+scale_features <- names(clusterset2)[apply(clusterset2, 2, function(x) max(x) != 1)]
+clusterset2_scaled <- 
+  clusterset2 %>%
+  mutate_each_(funs((.-min(.))/(max(.)-min(.))), scale_features)
+# summary(clusterset2_scaled)
+
+```
+
+### Delete correlated features
+```{r}
+
+delete_correlation <- function(dataset, threshold, plotcor) {
+  require(caret)
+  # plot correlation plot
+  cor_set <- cor(dataset)
+  if(plotcor == TRUE) corrplot::corrplot(cor_set, tl.cex = 0.5, type = "lower", method = "number", number.cex = 0.5)
+  # This function searches through a correlation matrix and returns a vector of integers corresponding to columns to remove to reduce pair-wise correlations.
+  high_correlated = findCorrelation(cor_set, cutoff= threshold, exact = TRUE) # Correlation has to be higher than 75% #
+  
+  # remove higly correlated (must be irrelevant) 
+  if(length(high_correlated) > 0){
+    cor_set_return = dataset[,-c(high_correlated)]
+  }
+  
+  return(cor_set_return)
+} 
+
+# clusterset with no correlated features
+# set correlation threshold
+clusterset_no_cor <- delete_correlation(clusterset_scaled, 0.80, FALSE)
+clusterset2_no_cor <- delete_correlation(clusterset2_scaled, 0.80, FALSE)
+```
+
+### Select only usage features
+
+```{r}
+# clusterset with only usage features
+
+# clusterset, scaled, percentage features + network features
+clusterset_usage_scaled <- 
+  select(clusterset_scaled, -degree_all, -degree_in, -c(betweenness:transitivity) )
+# clusterset, NOT scaled, percentage features + network features
+clusterset_usage <-
+  select(clusterset, -degree_all, -degree_in, -c(betweenness:transitivity) )
+
+# clusterset, scaled, NO percentage features
+clusterset2_usage_scaled <-
+  select(clusterset2_scaled, -degree_all, -degree_in, -c(betweenness:transitivity) )
+
+# clusterset, NOT scaled, NO percentage features 
+clusterset2_usage <-
+  select(clusterset2, -degree_all, -degree_in, -c(betweenness:transitivity) )
+
+
+```
+
+# Assessing of clustering tendency
+
+Hopkins statistic is used to assess the clustering tendency of a dataset by measuring the probability that a given dataset is generated by a uniform data distribution. In other words it tests the spatial randomness of the data.
+http://www.sthda.com/english/wiki/assessing-clustering-tendency-a-vital-issue-unsupervised-machine-learning
+If the value of Hopkins statistic is close to zero, then we can reject the null hypothesis and conclude that the dataset D is significantly a clusterable data
+
+not feasable to calculate distance matrics on this size
+```{r}
+library(factoextra)
+library(clustertend)
+library(seriation)
+
+# Hopkins statistic is used to assess the clustering tendency of a dataset by measuring the probability that a given dataset is generated by a uniform data distribution. In other words it tests the spatial randomness of the data.
+# http://www.sthda.com/english/wiki/assessing-clustering-tendency-a-vital-issue-unsupervised-machine-learning
+# If the value of Hopkins statistic is close to zero, then we can reject the null hypothesis and conclude that the dataset D is significantly a clusterable data
+
+# not feasable
+# hopkins(clusterset_scaled, n = nrow(clusterset_scaled)-1)
+
+# not feasable
+# df <- dist(clusterset_scaled)
+```
+
+
+# Cluster
+
+## K-mean attempt
+
+```{r}
+kmean_fun <- function(dataset, max_cluster) {
+  require(foreach)
+  require(doParallel)
+  no_cores <- detectCores()-1
+  #nr of processors available registerDoParallel(cl)
+  cl<-makeCluster(no_cores) #nr of processors available 
+  registerDoParallel(cl)
+  
+  # result.kmean <- (nrow(dataset)-1)*sum(apply(dataset,2,var))
+  result.kmean <- foreach(i=1:max_cluster) %dopar% {
+    km <- kmeans(dataset, centers = i, iter.max = 15);
+    return(km)
+  }
+  stopImplicitCluster()
+  stopCluster(cl)
+  return(result.kmean)
+}
+
+# normal set, perc vs abso
+kmean_orig_noscale <- kmean_fun(clusterset, 10)
+kmean_set2_noscale <- kmean_fun(clusterset2, 10)
+# scaled set, perc vs abso
+kmean_scaled <- kmean_fun(clusterset_scaled, 10)
+kmean_scaled_set2 <- kmean_fun(clusterset2_scaled, 10)
+# usage set, perc vs abso
+kmean_usage <- kmean_fun(clusterset_usage, 10)
+kmean_usage_set2 <- kmean_fun(clusterset2_usage, 10)
+# usage scaled set, perc vs abso
+kmean_usage_scaled <- kmean_fun(clusterset_usage_scaled, 10)
+kmean_usage_scaled_set2 <- kmean_fun(clusterset2_usage_scaled, 10)
+# normal set, NO COR, perc vs abso
+kmean_no_cor <- kmean_fun(clusterset_no_cor, 10)
+kmean_no_cor_set2 <- kmean_fun(clusterset2_no_cor, 10)
+
+elbow_plot <- function(dataset, plotname) {
+  plot(1:10, sapply(dataset, function(x) x$tot.withinss), type="b", xlab="Number of Clusters", ylab="Within groups sum of squares", main = plotname)
+}
+par(mfrow=c(2,5))
+
+elbow_plot(kmean_orig_noscale, "Clusterset perc")
+elbow_plot(kmean_set2_noscale, "Clusterset no perc")
+elbow_plot(kmean_scaled, "Clusterset scaled, perc")
+elbow_plot(kmean_scaled_set2, "Clusterset scaled, no perc")
+elbow_plot(kmean_usage, "Clusterset usage features only, perc")
+elbow_plot(kmean_usage_set2, "Clusterset usage features only, no perc")
+elbow_plot(kmean_usage_scaled, "Clusterset usage features , scaled, perc")
+elbow_plot(kmean_usage_scaled_set2, "Clusterset usage features, scaled, no perc")
+elbow_plot(kmean_no_cor, "Clusterset no cor, perc")
+elbow_plot(kmean_no_cor_set2, "Clusterset  no cor, no perc")
+
+```
+
+## K-Medoid
+
+PAM (Partitioning Around Medoids) is a classic algorithm for k-medoids clustering. While the PAM algorithm is inefficient for clustering large data, the CLARA algorithm is an enhanced technique of PAM by drawing multiple samples of data, applying PAM on each sample and then returning the best clustering. It performs better than PAM on larger data. Functions pam() and clara() in package cluster [Maechler et al., 2015] are respectively im- plementations of PAM and CLARA in R. For both algorithms, a user has to specify k, the number of clusters to find. As an enhanced version of pam(), function pamk() in package fpc [Hennig, 2015] does not require a user to choose k. Instead, it calls the function pam() or clara() to perform a partitioning around medoids clustering with the number of clusters estimated by optimum average silhouette width.
+
+```{r}
+library(cluster)
+library(fpc)
+
+
+
+pamk_fun <- function(dataset, iterations) {
+  require(foreach)
+  require(doParallel)
+  require(fpc)
+  no_cores <- detectCores()-1
+  #nr of processors available registerDoParallel(cl)
+  cl<-makeCluster(no_cores) #nr of processors available 
+  registerDoParallel(cl)
+  
+  # result.pamk <- (nrow(dataset)-1)*sum(apply(dataset,2,var))
+  result.pamk <- foreach(i=1:iterations, .packages = 'fpc') %dopar% {
+    km <- pamk(dataset, criterion="multiasw");
+    return(km)
+  }
+  stopImplicitCluster()
+  stopCluster(cl)
+  return(result.pamk)
+}
+
+pamk_scaled <- pamk(clusterset_scaled, usepam = FALSE)
+```
+
+
+## Measure Cluster
+
+difference internal / external cluster criteria / validation
 
 

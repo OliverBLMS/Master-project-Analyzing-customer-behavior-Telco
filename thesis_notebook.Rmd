@@ -125,11 +125,7 @@ More in-depth focus on call duration (power law distribution)
 # get boxplots stats: containing the extreme of the lower whisker, the lower ‘hinge’, the median, the upper ‘hinge’ and the extreme of the upper whisker.
 stats_boxplot <- boxplot.stats(cdr1$CALL_ACTUAL_DURATION)$stats
 stats_boxplot
-# Look at density of the long tail.
-# cdr1$CALL_ACTUAL_DURATION[cdr1$CALL_ACTUAL_DURATION >= stats_boxplot[5]] %>% hist()
 
-# addes maximum as endpoint for the breaks
-cdr1$breaks <- cut(cdr1$CALL_ACTUAL_DURATION, breaks=c(stats_boxplot, max(cdr1$CALL_ACTUAL_DURATION)) ,labels=F, include.lowest = T, right = T)
 # density plot on breaks
 filter(cdr1, CALL_ACTUAL_DURATION <= 20) %>%
   ggplot(aes(x = CALL_ACTUAL_DURATION )) +
@@ -860,7 +856,7 @@ net_pagerank <-
 ```
 
 
-## Putting it all together
+# Putting it all together
 
 ```{r}
 
@@ -895,10 +891,19 @@ rm(deg_all_graphs,deg_in_graphs, deg_out_graphs, net_betweenness, net_closeness_
 # BACKUP STEP: finalset vanaf hier
 
 
+
 # Part 3: Cluster
+
+```{r}
+# libraries
+
+```
+
+
+
 Make unique rownmames of mygroup + A_NUMBER
 ```{r}
-
+# finalset <- sample_frac(finalset, size = 0.30, replace = FALSE )
 # Make a rownames of the group + A-NUMBER
 finalset <- 
   finalset %>%
@@ -906,109 +911,59 @@ finalset <-
 
 class(finalset) <- "data.frame"
 row.names(finalset) <- finalset$key
-finalset <- finalset[,-c(1:3)]
-
+finalset <- finalset[,-c(2:3)]
 
 # Remove irrelevant features
+# keep everything, except home, other net
 clusterset <- 
   dplyr::select(finalset,
+                key,
                 nr_unique_calls,
                 recency_min,
-                frequency_perc,
-                mon_value_perc,
+                nr_call,
+                total_call_time,
                 ave_call_time,
                 nr_call_NON_PEAK_perc,
                 nr_call_PEAK_perc,
                 nr_call_WEEK_perc,
                 nr_call_WEEKEND_perc,
-                nr_call_HOME_NET_perc,
-                nr_call_OTHER_NET_perc,
                 total_call_time_NON_PEAK_perc,
                 total_call_time_PEAK_perc,
                 total_call_time_WEEK_perc,
                 total_call_time_WEEKEND_perc,
-                total_call_time_HOME_NET_perc,
-                total_call_time_OTHER_NET_perc,
-                ave_call_time_NON_PEAK,
-                ave_call_time_PEAK,
-                ave_call_time_WEEK,
-                ave_call_time_WEEKEND,
-                ave_call_time_HOME_NET,
-                ave_call_time_OTHER_NET,
                 degree_all,
                 degree_in,
-                degree_out,
                 betweenness,
                 closeness_in,
                 closeness_out,
                 pagerank,
                 triangles,
-                transitivity
-  )
+                transitivity)
 
-# dont go with percentages, go with total call time instead
-clusterset2 <- 
-  dplyr::select(finalset,
-                nr_unique_calls,
-                recency_min,
-                total_call_time,
-                ave_call_time,
-                nr_call_NON_PEAK,
-                nr_call_PEAK,
-                nr_call_WEEK,
-                nr_call_WEEKEND,
-                nr_call_HOME_NET,
-                nr_call_OTHER_NET,
-                total_call_time_NON_PEAK,
-                total_call_time_PEAK,
-                total_call_time_WEEK,
-                total_call_time_WEEKEND,
-                total_call_time_HOME_NET,
-                total_call_time_OTHER_NET,
-                ave_call_time_NON_PEAK,
-                ave_call_time_PEAK,
-                ave_call_time_WEEK,
-                ave_call_time_WEEKEND,
-                ave_call_time_HOME_NET,
-                ave_call_time_OTHER_NET,
-                degree_all,
-                degree_in,
-                degree_out,
-                betweenness,
-                closeness_in,
-                closeness_out,
-                pagerank,
-                triangles,
-                transitivity
-  )
-
-```
-
-
-### Scale everything between value of [0-1]
-
-```{r}
-# unitization with zero minimum: make  function
+# TAke scaling: Range vs scaling (x-md/sd)
 range01 <- function(x){(x-min(x))/(max(x)-min(x))}
-
-# check with features need to be scaled, max value is not 1
-scale_features <- names(clusterset)[apply(clusterset, 2, function(x) max(x) != 1)]
-# make set
-# summary(clusterset)
-clusterset_scaled <- 
+### Range everything between value of [0-1]
+clusterset_ranged <-
   clusterset %>%
-  mutate_each_(funs((.-min(.))/(max(.)-min(.))), scale_features)
-# summary(clusterset_scaled)
+  mutate_each(funs((.-min(.))/(max(.)-min(.))), -key)
 
-# summary(clusterset2)
-# check with features need to be scaled, max value is not 1
-scale_features <- names(clusterset2)[apply(clusterset2, 2, function(x) max(x) != 1)]
-clusterset2_scaled <- 
-  clusterset2 %>%
-  mutate_each_(funs((.-min(.))/(max(.)-min(.))), scale_features)
-# summary(clusterset2_scaled)
+### Scale 
+clusterset_scaled <-
+  clusterset %>%
+  mutate_each(funs((. - mean(.)) / sd(.)), -key)
 
 ```
+
+### Take samples
+```{r}
+clusterset <- sample_frac(clusterset, size = 0.2,replace = FALSE)
+clusterset_ranged <- filter(clusterset_ranged, key %in% clusterset$key)
+clusterset_scaled <- filter(clusterset_scaled, key %in% clusterset$key)
+
+```
+
+
+
 
 ### Delete correlated features
 ```{r}
@@ -1016,7 +971,7 @@ clusterset2_scaled <-
 delete_correlation <- function(dataset, threshold, plotcor) {
   require(caret)
   # plot correlation plot
-  cor_set <- cor(dataset)
+  cor_set <- cor(dataset[,-1])
   if(plotcor == TRUE) corrplot::corrplot(cor_set, tl.cex = 0.5, type = "lower", method = "number", number.cex = 0.5)
   # This function searches through a correlation matrix and returns a vector of integers corresponding to columns to remove to reduce pair-wise correlations.
   high_correlated = findCorrelation(cor_set, cutoff= threshold, exact = TRUE) # Correlation has to be higher than 75% #
@@ -1031,9 +986,12 @@ delete_correlation <- function(dataset, threshold, plotcor) {
 
 # clusterset with no correlated features
 # set correlation threshold
-clusterset_no_cor <- delete_correlation(clusterset_scaled, 0.80, FALSE)
-clusterset2_no_cor <- delete_correlation(clusterset2_scaled, 0.80, FALSE)
+clusterset_no_cor <- delete_correlation(clusterset_scaled, 0.8, FALSE)
+clusterset2_no_cor <- delete_correlation(clusterset2_scaled, 0.8, FALSE) # no perc
+clusterset3_no_cor <- delete_correlation(clusterset3_scaled, 0.8, FALSE)
+
 ```
+
 
 ### Select only usage features
 
@@ -1058,33 +1016,12 @@ clusterset2_usage <-
 
 ```
 
-# Assessing of clustering tendency
-
-Hopkins statistic is used to assess the clustering tendency of a dataset by measuring the probability that a given dataset is generated by a uniform data distribution. In other words it tests the spatial randomness of the data.
-http://www.sthda.com/english/wiki/assessing-clustering-tendency-a-vital-issue-unsupervised-machine-learning
-If the value of Hopkins statistic is close to zero, then we can reject the null hypothesis and conclude that the dataset D is significantly a clusterable data
-
-not feasable to calculate distance matrics on this size
-```{r}
-library(factoextra)
-library(clustertend)
-library(seriation)
-
-# Hopkins statistic is used to assess the clustering tendency of a dataset by measuring the probability that a given dataset is generated by a uniform data distribution. In other words it tests the spatial randomness of the data.
-# http://www.sthda.com/english/wiki/assessing-clustering-tendency-a-vital-issue-unsupervised-machine-learning
-# If the value of Hopkins statistic is close to zero, then we can reject the null hypothesis and conclude that the dataset D is significantly a clusterable data
-
-# not feasable
-# hopkins(clusterset_scaled, n = nrow(clusterset_scaled)-1)
-
-# not feasable
-# df <- dist(clusterset_scaled)
-```
-
-
 # Cluster
 
 ## K-mean attempt
+
+Do this several times with incremented number of clusters.
+* Evaluatie by looking at the SSE , this is called the elbow technique
 
 ```{r}
 kmean_fun <- function(dataset, max_cluster) {
@@ -1092,12 +1029,12 @@ kmean_fun <- function(dataset, max_cluster) {
   require(doParallel)
   no_cores <- detectCores()-1
   #nr of processors available registerDoParallel(cl)
-  cl<-makeCluster(no_cores) #nr of processors available 
+  cl<-makeCluster(no_cores, type = "FORK") #nr of processors available 
   registerDoParallel(cl)
   
   # result.kmean <- (nrow(dataset)-1)*sum(apply(dataset,2,var))
   result.kmean <- foreach(i=1:max_cluster) %dopar% {
-    km <- kmeans(dataset, centers = i, iter.max = 15);
+    km <- kmeans(dataset, centers = i, iter.max = 30, nstart = 10);
     return(km)
   }
   stopImplicitCluster()
@@ -1105,37 +1042,86 @@ kmean_fun <- function(dataset, max_cluster) {
   return(result.kmean)
 }
 
-# normal set, perc vs abso
-kmean_orig_noscale <- kmean_fun(clusterset, 10)
-kmean_set2_noscale <- kmean_fun(clusterset2, 10)
-# scaled set, perc vs abso
-kmean_scaled <- kmean_fun(clusterset_scaled, 10)
-kmean_scaled_set2 <- kmean_fun(clusterset2_scaled, 10)
-# usage set, perc vs abso
-kmean_usage <- kmean_fun(clusterset_usage, 10)
-kmean_usage_set2 <- kmean_fun(clusterset2_usage, 10)
-# usage scaled set, perc vs abso
-kmean_usage_scaled <- kmean_fun(clusterset_usage_scaled, 10)
-kmean_usage_scaled_set2 <- kmean_fun(clusterset2_usage_scaled, 10)
-# normal set, NO COR, perc vs abso
-kmean_no_cor <- kmean_fun(clusterset_no_cor, 10)
-kmean_no_cor_set2 <- kmean_fun(clusterset2_no_cor, 10)
 
-elbow_plot <- function(dataset, plotname) {
-  plot(1:10, sapply(dataset, function(x) x$tot.withinss), type="b", xlab="Number of Clusters", ylab="Within groups sum of squares", main = plotname)
+kmean_ranged <- kmean_fun(clusterset_ranged[,-1], 15)
+kmean_scaled <- kmean_fun(clusterset_scaled[,-1], 15)
+
+```
+
+## Kmeans-run (detect optimal clusters)
+Try other function: fpc::kmeansruns
+* this will also incremented the number of cluster in each run and eavluate it automatically with the  Calinski Harabasz index
+
+```{r}
+# 
+
+kmeanruns_fun <- function(dataset, max_cluster) {
+  require(fpc)
+  # require(foreach)
+  # require(doParallel)
+  # no_cores <- detectCores()-1
+  # #nr of processors available registerDoParallel(cl)
+  # cl<-makeCluster(no_cores, type = "FORK") #nr of processors available 
+  # registerDoParallel(cl)
+  
+  # result.kmean <- (nrow(dataset)-1)*sum(apply(dataset,2,var))
+  km <- kmeansruns(dataset, krange= 1:15, criterion = "ch", runs = 10, iter.max = 30);
+  return(km)
+  # 
+  # stopImplicitCluster()
+  # stopCluster(cl)
+  # return(result.kmean)
 }
-par(mfrow=c(2,5))
 
-elbow_plot(kmean_orig_noscale, "Clusterset perc")
-elbow_plot(kmean_set2_noscale, "Clusterset no perc")
-elbow_plot(kmean_scaled, "Clusterset scaled, perc")
-elbow_plot(kmean_scaled_set2, "Clusterset scaled, no perc")
-elbow_plot(kmean_usage, "Clusterset usage features only, perc")
-elbow_plot(kmean_usage_set2, "Clusterset usage features only, no perc")
-elbow_plot(kmean_usage_scaled, "Clusterset usage features , scaled, perc")
-elbow_plot(kmean_usage_scaled_set2, "Clusterset usage features, scaled, no perc")
-elbow_plot(kmean_no_cor, "Clusterset no cor, perc")
-elbow_plot(kmean_no_cor_set2, "Clusterset  no cor, no perc")
+kmeansrun_ranged <- kmeanruns_fun(clusterset_ranged[,-1])
+kmeanruns_scaled <- kmeanruns_fun(clusterset_scaled[,-1])
+
+
+```
+
+### Evaluate K-mean clusters
+
+I have a preference for clusterset 3 with 10 clusters.
+
+#### Elbow technique
+Plot the withiness sum of squared distance
+```{r}
+elbow_plot <- function(dataset, plotname) {
+  plot(1:15, sapply(dataset, function(x) x$tot.withinss), type="b", xlab="Number of Clusters", ylab="Within groups sum of squares", main = plotname)
+}
+png("elbow_kmeans_final.png", width = 500,  height = 800, res = 100)
+par(mfrow=c(2,1))
+elbow_plot(kmean_scaled, "Clusterset ranged")
+elbow_plot(kmean_ranged, "Clusterset scaled")
+dev.off()
+```
+
+### Calinski-Harabsz 
+
+The outcome of the CH measure is a number between 0 and + infinity, a larger number indicates a better cluster quality 
+```{r}
+ch_plot <- function(dataset, datacluster, plotname) {
+  require(clusterSim)
+  par(mfrow=c(1,2))
+  plot(1:15, sapply(datacluster, function(i) index.G1(dataset[,-1], cl = i$cluster)), type="b", xlab="Number of Clusters", ylab="Davies-Bouldin [0,+oneindig] smaller = better", main = plotname)
+  plot(1:15, sapply(datacluster, function(i) index.DB(dataset[,-1], cl = i$cluster)$DB), type="b", xlab="Number of Clusters", ylab="Davies-Bouldin [0,+oneindig] smaller = better", main = plotname)
+}
+
+ch_plot(clusterset_ranged, kmean_ranged, "Clusterset 3 scaled, perc, manual select")
+ch_plot(clusterset_scaled, kmean_scaled, "Clusterset 4 scaled, perc, manual select")
+
+
+# check fit of clusters
+measure_cluster <- function(dataset, datacluster) {
+  ####STATISTICS
+  require(clusterSim)
+  indexCH <- index.G1(dataset[,-1], datacluster)
+  indexDB <- index.DB(dataset[,-1], datacluster) 
+  cat('Davies-Bouldin [0,+oneindig] smaller = better: ',indexDB$DB,'\nDavies-Bouldin [0,+oneindig] smaller = better: ',indexCH) 
+  list(CH = indexCH, DB = indexDB$DB)
+}
+measure_cluster(clusterset_ranged, kmean_ranged[[10]]$cluster)
+measure_cluster(clusterset_scaled, kmean_scaled[[10]]$cluster)
 
 ```
 
@@ -1144,36 +1130,72 @@ elbow_plot(kmean_no_cor_set2, "Clusterset  no cor, no perc")
 PAM (Partitioning Around Medoids) is a classic algorithm for k-medoids clustering. While the PAM algorithm is inefficient for clustering large data, the CLARA algorithm is an enhanced technique of PAM by drawing multiple samples of data, applying PAM on each sample and then returning the best clustering. It performs better than PAM on larger data. Functions pam() and clara() in package cluster [Maechler et al., 2015] are respectively im- plementations of PAM and CLARA in R. For both algorithms, a user has to specify k, the number of clusters to find. As an enhanced version of pam(), function pamk() in package fpc [Hennig, 2015] does not require a user to choose k. Instead, it calls the function pam() or clara() to perform a partitioning around medoids clustering with the number of clusters estimated by optimum average silhouette width.
 
 ```{r}
-library(cluster)
-library(fpc)
-
-
 
 pamk_fun <- function(dataset, iterations) {
-  require(foreach)
-  require(doParallel)
-  require(fpc)
-  no_cores <- detectCores()-1
+  # no_cores <- detectCores()-1
   #nr of processors available registerDoParallel(cl)
-  cl<-makeCluster(no_cores) #nr of processors available 
-  registerDoParallel(cl)
+  # cl<-makeCluster(no_cores) #nr of processors available 
+  # registerDoParallel(cl)
   
   # result.pamk <- (nrow(dataset)-1)*sum(apply(dataset,2,var))
-  result.pamk <- foreach(i=1:iterations, .packages = 'fpc') %dopar% {
-    km <- pamk(dataset, criterion="multiasw");
-    return(km)
-  }
-  stopImplicitCluster()
-  stopCluster(cl)
-  return(result.pamk)
+  # result.pamk <- foreach(i=1:iterations) %dopar% {
+  km <- pamk(dataset, krange = 1:15,  criterion="ch", usepam = FALSE);
+  return(km)
+  # }
+  # stopImplicitCluster()
+  # stopCluster(cl)
+  # return(result.pamk)
 }
 
-pamk_scaled <- pamk(clusterset_scaled, usepam = FALSE)
+pamk_ranged <- pamk_fun(clusterset_ranged[,-1])
+pamk_scaled <- pamk_fun(clusterset_scaled[,-1])
+
+```
+
+## DBSCAN
+```{r}
+library(dbscan)
+library(fpc)
+
+distplot_clusterset_scaled <- kNNdistplot(clusterset_scaled[,-1], k =  5)
+distplot_clusterset_scaled
+
+abline(h = 0.21, lty = 2)
+
+dbscan_clusterset_scaled <- dbscan(x = clusterset3_scaled[,-1], eps = 0.2, borderPoints = TRUE)
 ```
 
 
-## Measure Cluster
+# Describe cluster
 
-difference internal / external cluster criteria / validation
+Look at cluster characteristics of the scaled clusterset with no pertages
+```{r}
 
+cluster_analyse <- function(dataset, clustervector, fun) {
+  # characteristics of each cluster
+  charact <- 
+    aggregate(clusterset[,-1],  by = list(cluster = pamk_ranged$pamobject$clustering), mean)
+  print(charact)
+  
+  # put it in a long format to plot with ggplot
+  charact_long <-
+    charact %>%
+    gather(vars, value, -cluster) %>%
+    group_by(vars) %>%
+    mutate(value = range01(value))  
+  # ggplot heatmap with profile of each cluster
+  
+  orderit <- c("nr_unique_calls","recency_min", "nr_call", "total_call_time", "ave_call_time", "nr_call_NON_PEAK_perc", "nr_call_PEAK_perc", "nr_call_WEEK_perc", "nr_call_WEEKEND_perc", "total_call_time_NON_PEAK_perc", "total_call_time_PEAK_perc", "total_call_time_WEEK_perc", "total_call_time_WEEKEND_perc" ,"degree_all", "degree_in", "betweenness", "closeness_in", "closeness_out", "pagerank", "triangles", "transitivity")
+  
+  charact_long$vars <- factor(charact_long$vars, levels = orderit)
+  
+  ggplot(charact_long, aes(x = as.factor(cluster), y = vars)) + geom_tile(aes(fill = value)) + theme_minimal()+ scale_fill_gradient(low = "white", high = "steelblue") + theme_bw() + theme(axis.ticks = element_blank(), panel.border = element_blank()) + scale_x_discrete(expand = c(0, 0))
+  ggsave(filename =  deparse(substitute(clustervector)), device = "png")
+  
+}
+
+
+
+
+```
 

@@ -62,11 +62,16 @@ The test CDR dataset only contain 100 record, whereas each record represents an 
 # read sample dataset (for now make sample set)
 ################################################################################################################
 # read test CDR dataset
-cdr1 <- fread(input = "PREPAID_CDR_ANONYM_201005.txt", header = TRUE, sep = ",", stringsAsFactors = FALSE)
-# cdr2 <- fread(input = "PREPAID_CDR_ANONYM_201006.txt", header = TRUE, sep = ",", stringsAsFactors = FALSE)
-dim(cdr1)
-cdr1$A_NUMBER <- as.character(cdr1$A_NUMBER)
-cdr1$B_NUMBER <- as.character(cdr1$B_NUMBER)
+read_data <- function(pathfile) {
+  temp <- fread(input = pathfile, header = TRUE, sep = ",", stringsAsFactors = FALSE)
+  temp$A_NUMBER <- as.character(temp$A_NUMBER)
+  temp$B_NUMBER <- as.character(temp$B_NUMBER)
+  return(temp)
+}
+cdr1 <- read_data("PREPAID_CDR_ANONYM_201005.txt")
+cdr2 <- read_data("PREPAID_CDR_ANONYM_201006.txt")
+cdr3 <- read_data("PREPAID_CDR_ANONYM_201007.txt")
+
 
 ```
 
@@ -175,8 +180,12 @@ This table (above) give insights how much data will be thrown away when a certai
 
 ```{r}
 # drop calls under 5 seconds -> this implies wrong calls or perhaps voicemail calls
-cdr1 <-
-  filter(cdr1, CALL_ACTUAL_DURATION > 5)
+filter_sec <- function(dataset) {
+  temt <-
+    filter(dataset, CALL_ACTUAL_DURATION > 5)
+  return(temp)
+}
+
 ```
 
 #### Detect outliers based on calls (incoming or outgoing calls)
@@ -185,19 +194,44 @@ cdr1 <-
 * one way to detect them is look at incoming calls, and exclude the +3 stan dev from the mean number of incoming calls
 
 ```{r}
-# calculate number of incoming calls for a month per B_NUMBER
-incoming_calls <-
-  cdr1 %>%
-  group_by(B_NUMBER) %>%
-  summarise(nr = n()) %>%
-  arrange(desc(nr))
 
-# calculate number of incoming calls for a month per A_NUMBER
-outgoing_call <-
-  cdr1 %>%
-  group_by(A_NUMBER) %>%
-  summarise(nr = n()) %>%
-  arrange(desc(nr))
+filter_callers <- function(dataset) {
+  # calculate number of incoming calls for a month per B_NUMBER
+  incoming_calls <-
+    dataset %>%
+    group_by(B_NUMBER) %>%
+    summarise(nr = n()) %>%
+    filter(nr > 3000)
+  
+  # calculate number of incoming calls for a month per A_NUMBER
+  outgoing_call <-
+    dataset %>%
+    group_by(A_NUMBER) %>%
+    summarise(nr = n()) %>%
+    filter(nr > 3000)
+  
+  temp <- 
+    filter(dataset, 
+           !B_NUMBER %in% c(incoming_calls$B_NUMBER, outgoing_call$A_NUMBER), 
+           !A_NUMBER %in% c(incoming_calls$B_NUMBER, outgoing_call$A_NUMBER)
+    )
+  return(temp)
+}
+
+# 
+# # calculate number of incoming calls for a month per B_NUMBER
+# incoming_calls <-
+#   cdr1 %>%
+#   group_by(B_NUMBER) %>%
+#   summarise(nr = n()) %>%
+#   arrange(desc(nr))
+# 
+# # calculate number of incoming calls for a month per A_NUMBER
+# outgoing_call <-
+#   cdr1 %>%
+#   group_by(A_NUMBER) %>%
+#   summarise(nr = n()) %>%
+#   arrange(desc(nr))
 
 # INCOMING CALL
 # head(incoming_calls)
@@ -244,11 +278,7 @@ exclude all customers that have either incoming-outgoings calls above 1400 calls
 
 nrow(cdr1)
 # 23932953
-cdr1 <- 
-  filter(cdr1, 
-         !B_NUMBER %in% c(filter(incoming_calls, nr > 2000)$B_NUMBER, filter(outgoing_call, nr > 2000)$A_NUMBER), 
-         !A_NUMBER %in% c(filter(incoming_calls, nr > 2000)$B_NUMBER, filter(outgoing_call, nr > 2000)$A_NUMBER)
-  )
+
 
 nrow(cdr1)
 (1 - ( 24987280 / 25002277)) * 100
@@ -259,8 +289,11 @@ nrow(cdr1)
 ### Removing customers who call themself
 
 ```{r}
-cdr1_breakdown <-
-  filter(cdr1_breakdown, A_NUMBER != B_NUMBER)
+filter_self <- function(dataset) {
+  temp <-
+    filter(dataset, A_NUMBER != B_NUMBER)
+  return(temp)
+}
 ```
 
 
@@ -554,9 +587,9 @@ Clusters with less than a minimum amount of nodes will have all their nodes excl
 g <- simplify(
   graph.compose(
     graph.ring(10),
-    graph.star(5, mode = "undirected")
+    graph.star(4, mode = "undirected")
   )
-) + edge("7", "8") + edge("2", "3")
+) + edge("7", "8") + edge("2", "3") + edge("6", "1")
 
 plot(g)
 clusters(g)
@@ -890,18 +923,8 @@ rm(deg_all_graphs,deg_in_graphs, deg_out_graphs, net_betweenness, net_closeness_
 
 # BACKUP STEP: finalset vanaf hier
 
-
-
-# Part 3: Cluster
-
-```{r}
-# libraries
-
-```
-
-
-
-Make unique rownmames of mygroup + A_NUMBER
+* Make unique rownmames of mygroup + A_NUMBER
+* select business relevant features (apriori knowledgde)
 ```{r}
 # finalset <- sample_frac(finalset, size = 0.30, replace = FALSE )
 # Make a rownames of the group + A-NUMBER
@@ -948,75 +971,73 @@ clusterset_ranged <-
   mutate_each(funs((.-min(.))/(max(.)-min(.))), -key)
 
 ### Scale 
-clusterset_scaled <-
-  clusterset %>%
-  mutate_each(funs((. - mean(.)) / sd(.)), -key)
+# clusterset_scaled <-
+#   clusterset %>%
+#   mutate_each(funs((. - mean(.)) / sd(.)), -key)
 
 ```
 
 ### Take samples
 ```{r}
-clusterset <- sample_frac(clusterset, size = 0.2,replace = FALSE)
-clusterset_ranged <- filter(clusterset_ranged, key %in% clusterset$key)
-clusterset_scaled <- filter(clusterset_scaled, key %in% clusterset$key)
+# clusterset <- sample_frac(clusterset, size = 0.2,replace = FALSE)
+# clusterset_ranged <- filter(clusterset_ranged, key %in% clusterset$key)
+# clusterset_scaled <- filter(clusterset_scaled, key %in% clusterset$key)
 
 ```
-
 
 
 
 ### Delete correlated features
 ```{r}
-
-delete_correlation <- function(dataset, threshold, plotcor) {
-  require(caret)
-  # plot correlation plot
-  cor_set <- cor(dataset[,-1])
-  if(plotcor == TRUE) corrplot::corrplot(cor_set, tl.cex = 0.5, type = "lower", method = "number", number.cex = 0.5)
-  # This function searches through a correlation matrix and returns a vector of integers corresponding to columns to remove to reduce pair-wise correlations.
-  high_correlated = findCorrelation(cor_set, cutoff= threshold, exact = TRUE) # Correlation has to be higher than 75% #
-  
-  # remove higly correlated (must be irrelevant) 
-  if(length(high_correlated) > 0){
-    cor_set_return = dataset[,-c(high_correlated)]
-  }
-  
-  return(cor_set_return)
-} 
-
-# clusterset with no correlated features
-# set correlation threshold
-clusterset_no_cor <- delete_correlation(clusterset_scaled, 0.8, FALSE)
-clusterset2_no_cor <- delete_correlation(clusterset2_scaled, 0.8, FALSE) # no perc
-clusterset3_no_cor <- delete_correlation(clusterset3_scaled, 0.8, FALSE)
+# 
+# delete_correlation <- function(dataset, threshold, plotcor) {
+#   require(caret)
+#   # plot correlation plot
+#   cor_set <- cor(dataset[,-1])
+#   if(plotcor == TRUE) corrplot::corrplot(cor_set, tl.cex = 0.5, type = "lower", method = "number", number.cex = 0.5)
+#   # This function searches through a correlation matrix and returns a vector of integers corresponding to columns to remove to reduce pair-wise correlations.
+#   high_correlated = findCorrelation(cor_set, cutoff= threshold, exact = TRUE) # Correlation has to be higher than 75% #
+#   
+#   # remove higly correlated (must be irrelevant) 
+#   if(length(high_correlated) > 0){
+#     cor_set_return = dataset[,-c(high_correlated)]
+#   }
+#   
+#   return(cor_set_return)
+# } 
+# 
+# # clusterset with no correlated features
+# # set correlation threshold
+# clusterset_no_cor <- delete_correlation(clusterset_scaled, 0.8, FALSE)
+# clusterset2_no_cor <- delete_correlation(clusterset2_scaled, 0.8, FALSE) # no perc
+# clusterset3_no_cor <- delete_correlation(clusterset3_scaled, 0.8, FALSE)
 
 ```
 
 
 ### Select only usage features
-
 ```{r}
-# clusterset with only usage features
-
-# clusterset, scaled, percentage features + network features
-clusterset_usage_scaled <- 
-  select(clusterset_scaled, -degree_all, -degree_in, -c(betweenness:transitivity) )
-# clusterset, NOT scaled, percentage features + network features
-clusterset_usage <-
-  select(clusterset, -degree_all, -degree_in, -c(betweenness:transitivity) )
-
-# clusterset, scaled, NO percentage features
-clusterset2_usage_scaled <-
-  select(clusterset2_scaled, -degree_all, -degree_in, -c(betweenness:transitivity) )
-
-# clusterset, NOT scaled, NO percentage features 
-clusterset2_usage <-
-  select(clusterset2, -degree_all, -degree_in, -c(betweenness:transitivity) )
+# # clusterset with only usage features
+# 
+# # clusterset, scaled, percentage features + network features
+# clusterset_usage_scaled <- 
+#   select(clusterset_scaled, -degree_all, -degree_in, -c(betweenness:transitivity) )
+# # clusterset, NOT scaled, percentage features + network features
+# clusterset_usage <-
+#   select(clusterset, -degree_all, -degree_in, -c(betweenness:transitivity) )
+# 
+# # clusterset, scaled, NO percentage features
+# clusterset2_usage_scaled <-
+#   select(clusterset2_scaled, -degree_all, -degree_in, -c(betweenness:transitivity) )
+# 
+# # clusterset, NOT scaled, NO percentage features 
+# clusterset2_usage <-
+#   select(clusterset2, -degree_all, -degree_in, -c(betweenness:transitivity) )
 
 
 ```
 
-# Cluster
+# Part 3: Cluster
 
 ## K-mean attempt
 
@@ -1025,6 +1046,7 @@ Do this several times with incremented number of clusters.
 
 ```{r}
 kmean_fun <- function(dataset, max_cluster) {
+  # set.seed(112)
   require(foreach)
   require(doParallel)
   no_cores <- detectCores()-1
@@ -1037,127 +1059,156 @@ kmean_fun <- function(dataset, max_cluster) {
     km <- kmeans(dataset, centers = i, iter.max = 30, nstart = 10);
     return(km)
   }
+  # stop parallel cores
   stopImplicitCluster()
   stopCluster(cl)
+  # return list of kmean results
   return(result.kmean)
 }
 
 
 kmean_ranged <- kmean_fun(clusterset_ranged[,-1], 15)
-kmean_scaled <- kmean_fun(clusterset_scaled[,-1], 15)
 
 ```
 
-## Kmeans-run (detect optimal clusters)
+## Kmeans-run (detect optimal clusters automatically)
 Try other function: fpc::kmeansruns
-* this will also incremented the number of cluster in each run and eavluate it automatically with the  Calinski Harabasz index
+* this will also incremented the number of cluster in each run and eavluate it automatically with the Calinski Harabasz index
 
 ```{r}
-# 
-
-kmeanruns_fun <- function(dataset, max_cluster) {
-  require(fpc)
-  # require(foreach)
-  # require(doParallel)
-  # no_cores <- detectCores()-1
-  # #nr of processors available registerDoParallel(cl)
-  # cl<-makeCluster(no_cores, type = "FORK") #nr of processors available 
-  # registerDoParallel(cl)
-  
-  # result.kmean <- (nrow(dataset)-1)*sum(apply(dataset,2,var))
-  km <- kmeansruns(dataset, krange= 1:15, criterion = "ch", runs = 10, iter.max = 30);
-  return(km)
-  # 
-  # stopImplicitCluster()
-  # stopCluster(cl)
-  # return(result.kmean)
-}
-
-kmeansrun_ranged <- kmeanruns_fun(clusterset_ranged[,-1])
-kmeanruns_scaled <- kmeanruns_fun(clusterset_scaled[,-1])
-
-
+library(fpc)
+# run kmeansruns
+kmeansrun_ranged <- kmeansruns(clusterset_ranged[,-1], krange = 1:15, criterion = "ch", runs = 10, iter.max = 30)
+# nr of cluster based on CH criteria
+kmeansrun_ranged$bestk
 ```
 
-### Evaluate K-mean clusters
-
-I have a preference for clusterset 3 with 10 clusters.
-
-#### Elbow technique
+### Elbow technique for Kmean
 Plot the withiness sum of squared distance
 ```{r}
 elbow_plot <- function(dataset, plotname) {
   plot(1:15, sapply(dataset, function(x) x$tot.withinss), type="b", xlab="Number of Clusters", ylab="Within groups sum of squares", main = plotname)
 }
-png("elbow_kmeans_final.png", width = 500,  height = 800, res = 100)
-par(mfrow=c(2,1))
-elbow_plot(kmean_scaled, "Clusterset ranged")
-elbow_plot(kmean_ranged, "Clusterset scaled")
+
+# show plot
+elbow_plot(kmean_ranged, "Clusterset ranged")
+# safe plot
+png("elbow_kmeans_final2.png", width = 500,  height = 800, res = 100)
+par(mfrow=c(1,1))
+elbow_plot(kmean_ranged, "Clusterset ranged")
 dev.off()
-```
 
-### Calinski-Harabsz 
-
-The outcome of the CH measure is a number between 0 and + infinity, a larger number indicates a better cluster quality 
-```{r}
-ch_plot <- function(dataset, datacluster, plotname) {
-  require(clusterSim)
-  par(mfrow=c(1,2))
-  plot(1:15, sapply(datacluster, function(i) index.G1(dataset[,-1], cl = i$cluster)), type="b", xlab="Number of Clusters", ylab="Davies-Bouldin [0,+oneindig] smaller = better", main = plotname)
-  plot(1:15, sapply(datacluster, function(i) index.DB(dataset[,-1], cl = i$cluster)$DB), type="b", xlab="Number of Clusters", ylab="Davies-Bouldin [0,+oneindig] smaller = better", main = plotname)
-}
-
-ch_plot(clusterset_ranged, kmean_ranged, "Clusterset 3 scaled, perc, manual select")
-ch_plot(clusterset_scaled, kmean_scaled, "Clusterset 4 scaled, perc, manual select")
-
-
-# check fit of clusters
-measure_cluster <- function(dataset, datacluster) {
-  ####STATISTICS
-  require(clusterSim)
-  indexCH <- index.G1(dataset[,-1], datacluster)
-  indexDB <- index.DB(dataset[,-1], datacluster) 
-  cat('Davies-Bouldin [0,+oneindig] smaller = better: ',indexDB$DB,'\nDavies-Bouldin [0,+oneindig] smaller = better: ',indexCH) 
-  list(CH = indexCH, DB = indexDB$DB)
-}
-measure_cluster(clusterset_ranged, kmean_ranged[[10]]$cluster)
-measure_cluster(clusterset_scaled, kmean_scaled[[10]]$cluster)
 
 ```
 
 ## K-Medoid
 
-PAM (Partitioning Around Medoids) is a classic algorithm for k-medoids clustering. While the PAM algorithm is inefficient for clustering large data, the CLARA algorithm is an enhanced technique of PAM by drawing multiple samples of data, applying PAM on each sample and then returning the best clustering. It performs better than PAM on larger data. Functions pam() and clara() in package cluster [Maechler et al., 2015] are respectively im- plementations of PAM and CLARA in R. For both algorithms, a user has to specify k, the number of clusters to find. As an enhanced version of pam(), function pamk() in package fpc [Hennig, 2015] does not require a user to choose k. Instead, it calls the function pam() or clara() to perform a partitioning around medoids clustering with the number of clusters estimated by optimum average silhouette width.
+PAM (Partitioning Around Medoids) is a classic algorithm for k-medoids clustering. While the PAM algorithm is inefficient for clustering large data, the CLARA algorithm is an enhanced technique of PAM by drawing multiple samples of data, applying PAM on each sample and then returning the best clustering. It performs better than PAM on larger data. Functions pam() and clara() in package cluster [Maechler et al., 2015] are respectively im-plementations of PAM and CLARA in R. For both algorithms, a user has to specify k, the number of clusters to find. As an enhanced version of pam(), function pamk() in package fpc [Hennig, 2015] does not require a user to choose k. Instead, it calls the function pam() or clara() to perform a partitioning around medoids clustering with the number of clusters estimated by optimum average silhouette width.
+
+Algorithm:
+* Split randomly the data sets in multiple subsets with fixed size
+* Compute PAM algorithm on each subset and choose the corresponding k representative objects (medoids).  Assign each observation of the entire dataset to the nearest medoid.
+* Calculate the mean (or the sum) of the dissimilarities of the observations to their closest medoid. This is used as a measure of the goodness of the clustering.
+* Retain the sub-dataset for which the mean (or sum) is minimal. A further analysis is carried out on the final partition.
+
+> Very fast with large n
 
 ```{r}
+require(fpc)
+require(cluster)
+# Use k-mediod method: pamk function that will return best nr of clusters based on ch
+pamk_ranged <- pamk(clusterset_ranged[,-1], krange = 1:15, criterion = "ch", usepam = FALSE)
+# nr of cluster
+pamk_ranged$nc
 
-pamk_fun <- function(dataset, iterations) {
-  # no_cores <- detectCores()-1
+# Run clara with a range of clusters
+# Evaluate later on the optimal cluster with the evaluation statistic CH, DB
+clara_fun <- function(dataset, max_cluster) {
+  set.seed(112)
+  require(cluster)
+  require(foreach)
+  require(doParallel)
+  no_cores <- detectCores()-1
   #nr of processors available registerDoParallel(cl)
-  # cl<-makeCluster(no_cores) #nr of processors available 
-  # registerDoParallel(cl)
+  cl<-makeCluster(no_cores, type = "FORK") #nr of processors available
+  registerDoParallel(cl)
   
-  # result.pamk <- (nrow(dataset)-1)*sum(apply(dataset,2,var))
-  # result.pamk <- foreach(i=1:iterations) %dopar% {
-  km <- pamk(dataset, krange = 1:15,  criterion="ch", usepam = FALSE);
-  return(km)
-  # }
-  # stopImplicitCluster()
-  # stopCluster(cl)
-  # return(result.pamk)
+  result.clara <- foreach(i=2:max_cluster) %dopar% {
+    pam_set <- clara(dataset, k = i, metric = "euclidean", stand = FALSE)
+    return(pam_set)
+  }
+  
+  # 
+  stopImplicitCluster()
+  stopCluster(cl)
+  return(result.clara)
 }
 
-pamk_ranged <- pamk_fun(clusterset_ranged[,-1])
-pamk_scaled <- pamk_fun(clusterset_scaled[,-1])
+
+# run clara function
+clara_ranged <- clara_fun(clusterset_ranged[,-1], 15)
+```
+### Evalute k-medoid
+#### Average silhouette width (based on best random subesets)
+
+Silhouette analysis measures how well an observation is clustered and it estimates the average distance between clusters. The silhouette plot displays a measure of how close each point in one cluster is to points in the neighboring clusters.
+
+Silhouette width can be interpreted as follow:
+* Observations with a large SiSi (almost 1) are very well clustered
+* A small SiSi (around 0) means that the observation lies between two clusters
+* Observations with a negative SiSi are probably placed in the wrong cluster.
+
+> By default, for clara() partitions, the silhouette is just for the best random subset used. Use full = TRUE to compute (and later possibly plot) the full silhouette :> DONT DO THIS because this will fail for the reason that n is to large to compute pairwise-distance matrix.
+
+* Silhouette statistic is not optimal criteria for cluster validation on this setup (best random subset is used). Instead used the CH, DB cluster validation on the whole dataset.
+
+```{r}
+# plot ave width of silhouette info
+plot(2:15, sapply(clara_ranged, function(x) x$silinfo$avg.width), type="b", xlab="Number of Clusters", ylab="Average silhouette width", main = "CLARA (k-mediod)")
+
+# GET RESULTS
+# k.best <- which.max(sapply(clara_ranged, function(x) x$silinfo$avg.width))
+# cat("silhouette-optimal number of clusters:", k.best +1, "\n")
+# # get result out of clara_ranged list
+# clara_result <- clara_ranged[[k.best]]
+```
+
+## Sk means
+
+```{r}
+library(skmeans)
+# Run clara with a range of clusters
+# Evaluate later on the optimal cluster with the evaluation statistic CH, DB
+skmeans_fun <- function(dataset, max_cluster) {
+  set.seed(112)
+  require(foreach)
+  require(doParallel)
+  no_cores <- detectCores()-1
+  #nr of processors available registerDoParallel(cl)
+  cl<-makeCluster(no_cores, type = "FORK") #nr of processors available
+  registerDoParallel(cl)
+  
+  result.skmeans <- foreach(i= 2:max_cluster) %dopar% {
+    skmeans_set <- skmeans(x = as.matrix(dataset), k = i, control = list(verbose = TRUE))
+    return(skmeans_set)
+  }
+  # stop parallel computing
+  stopImplicitCluster()
+  stopCluster(cl)
+  # return result as list
+  return(result.skmeans)
+}
+
+skmeans_ranged <- skmeans_fun(clusterset_ranged[,-1], 15)
 
 ```
 
 ## DBSCAN
 ```{r}
-library(dbscan)
-library(fpc)
+library(dbscan) # used to get KNN distance plot
+library(fpc)    # used dbscan of the fpc package
 
-distplot_clusterset_scaled <- kNNdistplot(clusterset_scaled[,-1], k =  5)
+distplot_clusterset_scaled <- kNNdistplot(clusterset_ranged[,-1], k =  10)
 distplot_clusterset_scaled
 
 abline(h = 0.21, lty = 2)
@@ -1166,20 +1217,111 @@ dbscan_clusterset_scaled <- dbscan(x = clusterset3_scaled[,-1], eps = 0.2, borde
 ```
 
 
+
+## Evaluate clusters
+K-means is all about centroids and variance and therefore criterions such as Calinski-Harabasz are more focused here.
+
+Use following functions to calculate Calinski-Harabsz and Davies Boulding.
+
+### Calinski-Harabsz and Davies Boulding cluster quality measures
+
+* function to retrieve CH, DB stats
+
+```{r}
+ch_plot <- function(dataset, datacluster, plotname, method) {
+  require(clusterSim)
+  # get correct cluster results, depens on algorithm used
+  if(method == "kmean")
+  {
+    x_values = 1:15
+    ch_values = sapply(datacluster, function(i) index.G1(dataset[,-1], cl = i$cluster))
+    db_values = sapply(datacluster, function(i) index.DB(dataset[,-1], cl = i$cluster)$DB)
+  } else {
+    x_values = 2:15
+    ch_values = sapply(datacluster, function(i) index.G1(dataset[,-1], cl = i$clustering))
+    db_values = sapply(datacluster, function(i) index.DB(dataset[,-1], cl = i$clustering)$DB)
+    
+  }
+  png(paste0(deparse(substitute(datacluster)),"_final.png"), width = 800,  height = 500, res = 100)
+  par(mfrow=c(1,2))
+  plot(x_values, ch_values, type="b", xlab="Number of Clusters", ylab="Calinski-Harabasz", main = plotname)
+  plot(x_values, db_values, type="b", xlab="Number of Clusters", ylab="Davies-Bouldin", main = plotname)
+  dev.off()
+}
+
+# check fit of clusters
+# return single 
+measure_cluster <- function(dataset, datacluster) {
+  ####STATISTICS
+  require(clusterSim)
+  cat(deparse(substitute(datacluster))) 
+  indexCH <- index.G1(dataset[,-1], datacluster)
+  indexDB <- index.DB(dataset[,-1], datacluster) 
+  cat('Davies-Bouldin',indexDB$DB,'\nCalinski-Harabasz',indexCH) 
+  print("---\n")
+  # list(CH = indexCH, DB = indexDB$DB)
+}
+
+```
+
+* Get stats for the different cluster methods
+
+```{r}
+# Kmeans
+# plot function
+ch_plot(clusterset_ranged, kmean_ranged, "Clusterset ranged kmean", method = "kmean")
+ch_plot(clusterset_ranged, clara_ranged, "Clusterset ranged clara", method = "clara")
+
+
+# Get stats for a specific cluster
+sink("db_ch_statistics.txt")
+measure_cluster(clusterset_ranged, kmean_ranged[[8]]$cluster)
+measure_cluster(clusterset_ranged, kmean_ranged[[9]]$cluster)
+measure_cluster(clusterset_ranged, kmeansrun_ranged$cluster)
+measure_cluster(clusterset_ranged, pamk_ranged$pamobject$clustering)
+measure_cluster(clusterset_ranged, clara_ranged[[7]]$clustering)
+measure_cluster(clusterset_ranged, clara_ranged[[8]]$clustering)
+sink()
+
+# safe output to console
+sink(file = "Cluster stats.txt")
+print(kmeansrun_ranged)
+print("-----------------------")
+print(kmean_ranged[[8]])
+print("-----------------------")
+print(kmean_ranged[[10]])
+print("-----------------------")
+print(clara_ranged[[7]])
+print("-----------------------")
+print(pamk_ranged)
+sink()
+
+
+```
+
+
 # Describe cluster
 
-Look at cluster characteristics of the scaled clusterset with no pertages
+Look at cluster characteristics 
+* mean
+* var
+
 ```{r}
 
-cluster_analyse <- function(dataset, clustervector, fun) {
+cluster_analyse <- function(dataset, clustervector) {
+  nameofcluster <- deparse(substitute(clustervector))
   # characteristics of each cluster
-  charact <- 
-    aggregate(clusterset[,-1],  by = list(cluster = pamk_ranged$pamobject$clustering), mean)
-  print(charact)
+  cluster_mean <- 
+    aggregate(clusterset[,-1],  by = list(cluster = clustervector), mean)
+  cluster_var <- 
+    aggregate(clusterset[,-1],  by = list(cluster = clustervector), var)
+  # print to txt
+  out <- capture.output(cluster_mean)
+  cat(out, file= paste0(nameofcluster,".txt"), sep="n")
   
   # put it in a long format to plot with ggplot
-  charact_long <-
-    charact %>%
+  cluster_mean_long <-
+    cluster_mean %>%
     gather(vars, value, -cluster) %>%
     group_by(vars) %>%
     mutate(value = range01(value))  
@@ -1187,15 +1329,37 @@ cluster_analyse <- function(dataset, clustervector, fun) {
   
   orderit <- c("nr_unique_calls","recency_min", "nr_call", "total_call_time", "ave_call_time", "nr_call_NON_PEAK_perc", "nr_call_PEAK_perc", "nr_call_WEEK_perc", "nr_call_WEEKEND_perc", "total_call_time_NON_PEAK_perc", "total_call_time_PEAK_perc", "total_call_time_WEEK_perc", "total_call_time_WEEKEND_perc" ,"degree_all", "degree_in", "betweenness", "closeness_in", "closeness_out", "pagerank", "triangles", "transitivity")
   
-  charact_long$vars <- factor(charact_long$vars, levels = orderit)
+  cluster_mean_long$vars <- factor(cluster_mean_long$vars, levels = orderit)
   
-  ggplot(charact_long, aes(x = as.factor(cluster), y = vars)) + geom_tile(aes(fill = value)) + theme_minimal()+ scale_fill_gradient(low = "white", high = "steelblue") + theme_bw() + theme(axis.ticks = element_blank(), panel.border = element_blank()) + scale_x_discrete(expand = c(0, 0))
-  ggsave(filename =  deparse(substitute(clustervector)), device = "png")
+  ggplot(cluster_mean_long, aes(x = as.factor(cluster), y = vars)) + geom_tile(aes(fill = value), color = "white") + theme_minimal()+ scale_fill_gradient(low = "white", high = "darkblue") + theme_bw() + theme(axis.ticks = element_blank(), panel.border = element_blank()) + scale_x_discrete(expand = c(0, 0))
+  ggsave(filename =  paste0(nameofcluster,".png"), device = "png")
   
 }
 
+# plot 
+cluster_analyse(clusterset, kmean_ranged[[10]]$cluster)
+cluster_analyse(clusterset, kmean_ranged[[8]]$cluster)
+cluster_analyse(clusterset, clara_ranged[[7]]$clustering)
 
 
 
+
+```
+
+# Part 4: Sequence mining 
+
+Next, lets do some sequence mining on the cluster we have for each customer on different time-periods. Before that, there needs to be some trasformztion done.
+* get clusterresult on a customer level, this is for each timeperiod the assigned cluster
+* add minilal support on the frequent itemset for the sequence mining
+
+```{r}
+library(arulesSequences)
+
+pos_seq <- data_frame(key = clusterset_ranged[,1], cluster = clara_ranged[[7]]$clustering)
+
+# Transform data set
+pos_seq <- 
+  pos_seq %>%
+  separate(col = key, into = c("mygroup", "A_NUMBER"), sep = "_" )
 ```
 

@@ -36,12 +36,13 @@ Basic steps to set the workdirectory and load the necessary packages/libraries.
 ```{r, message=FALSE, warning=FALSE, include=FALSE}
 # get / set workdirectory to read in the datafile
 ################################################################################################################
-setwd(dir = "/Users/oliver.belmans/Data/R_workdirectory/Thesis")
-getwd()
+# setwd(dir = "/Users/oliver.belmans/Data/R_workdirectory/Thesis")
+# getwd()
 
 # load packages/libraries used in the analysis
 ################################################################################################################
 pkg <- c("tidyverse", "igraph", "data.table", "dtplyr", "broom", "purrr", "ggplot2")
+# sapply(pkg, install.packages)
 sapply(pkg, require, character.only = TRUE )
 
 # # Setting up the parallel computing environment => system.time =:> seems slower on my mac
@@ -181,10 +182,14 @@ This table (above) give insights how much data will be thrown away when a certai
 ```{r}
 # drop calls under 5 seconds -> this implies wrong calls or perhaps voicemail calls
 filter_sec <- function(dataset) {
-  temt <-
+  temp <-
     filter(dataset, CALL_ACTUAL_DURATION > 5)
   return(temp)
 }
+
+cdr1 <- filter_sec(cdr1)
+cdr2 <- filter_sec(cdr2)
+cdr3 <- filter_sec(cdr3)
 
 ```
 
@@ -204,7 +209,7 @@ filter_callers <- function(dataset) {
     filter(nr > 3000)
   
   # calculate number of incoming calls for a month per A_NUMBER
-  outgoing_call <-
+  outgoing_calls <-
     dataset %>%
     group_by(A_NUMBER) %>%
     summarise(nr = n()) %>%
@@ -212,11 +217,16 @@ filter_callers <- function(dataset) {
   
   temp <- 
     filter(dataset, 
-           !B_NUMBER %in% c(incoming_calls$B_NUMBER, outgoing_call$A_NUMBER), 
-           !A_NUMBER %in% c(incoming_calls$B_NUMBER, outgoing_call$A_NUMBER)
+           !B_NUMBER %in% c(incoming_calls$B_NUMBER, outgoing_calls$A_NUMBER), 
+           !A_NUMBER %in% c(incoming_calls$B_NUMBER, outgoing_calls$A_NUMBER)
     )
   return(temp)
 }
+
+cdr1 <- filter_callers(cdr1)
+cdr2 <- filter_callers(cdr2)
+cdr3 <- filter_callers(cdr3)
+
 
 # 
 # # calculate number of incoming calls for a month per B_NUMBER
@@ -267,24 +277,7 @@ filter_callers <- function(dataset) {
 
 * Outgoing call: valid observations, order or max 40 made calls per month is still normal for highly usage.
 * Incoming calls: one particual invalid observations of 637 incoming calls (in one month). That is really extreme. 
-* Excluding this last number
 
-#### Exclude outliers
-
-exclude all customers that have either incoming-outgoings calls above 1400 calls a month.
-
-```{r}
-
-
-nrow(cdr1)
-# 23932953
-
-
-nrow(cdr1)
-(1 - ( 24987280 / 25002277)) * 100
-
-# 0.05 % thrown away
-```
 
 ### Removing customers who call themself
 
@@ -294,6 +287,11 @@ filter_self <- function(dataset) {
     filter(dataset, A_NUMBER != B_NUMBER)
   return(temp)
 }
+
+cdr1 <- filter_self(cdr1)
+cdr2 <- filter_self(cdr2)
+cdr3 <- filter_self(cdr3)
+
 ```
 
 
@@ -308,18 +306,29 @@ Next step is solving the date format, since the usage features will need a break
 
 ## CALL_START_DT to date format
 ## Create extra date/time variables like week-, daynumber, houres
-cdr1_breakdown <-
-  cdr1 %>% 
-  mutate(
-    CALL_START_DT = as.POSIXct(CALL_START_DT, "%d%b%Y", tz = "GMT"),
-    CALL_START_DT_TM = as.POSIXct(paste(CALL_START_DT, CALL_START_TM),"%Y-%m-%d %H:%M:%S", tz = "GMT"),
-    WEEK_NR = format(CALL_START_DT_TM, "%W"),
-    DAY_NR = format(CALL_START_DT_TM, "%u"),
-    DAY = format(CALL_START_DT_TM, "%a"),
-    HOUR = as.integer(format(CALL_START_DT_TM, "%H")),
-    PEAK_HOUR = ifelse(HOUR >= 9 & HOUR <= 19, "PEAK", "NON_PEAK"),
-    WEEKDAYS = ifelse(DAY_NR %in% c(6,7), "WEEKEND", "WEEK")
-  ) 
+breakdown <- function(dataset) {
+  temp <-
+    dataset %>% 
+    mutate(
+      CALL_START_DT = as.POSIXct(CALL_START_DT, "%d%b%Y", tz = "GMT"),
+      CALL_START_DT_TM = as.POSIXct(paste(CALL_START_DT, CALL_START_TM),"%Y-%m-%d %H:%M:%S", tz = "GMT"),
+      WEEK_NR = format(CALL_START_DT_TM, "%W"),
+      DAY_NR = format(CALL_START_DT_TM, "%u"),
+      DAY = format(CALL_START_DT_TM, "%a"),
+      HOUR = as.integer(format(CALL_START_DT_TM, "%H")),
+      PEAK_HOUR = ifelse(HOUR >= 9 & HOUR <= 19, "PEAK", "NON_PEAK"),
+      WEEKDAYS = ifelse(DAY_NR %in% c(6,7), "WEEKEND", "WEEK")
+    )
+  return(temp)
+}
+
+
+# breakdown(cdr1 %>% head)
+
+cdr1 <- breakdown(cdr1)
+cdr2 <- breakdown(cdr2)
+cdr3 <- breakdown(cdr3)
+
 
 hist(cdr1_breakdown$HOUR)
 abline(v = "9", col = "red")
@@ -343,34 +352,44 @@ tidy(table(cdr1_breakdown$WEEK_NR)) %>%
 # I choose grouping of 2 weeks
 # week 18 - 19 => togehter in the same group nr 18
 # week 20 - 21 => together in the same group nr 20
-cdr1_breakdown <- 
-  cdr1_breakdown %>% 
-  mutate(
-    mygroup = floor(as.numeric(WEEK_NR) / 2) *2) %>% # group 2 weeks in one
-  group_by(mygroup) %>%
-  # add max date of the 2 week intervalt
-  mutate(
-    max_date = max(CALL_START_DT)
-  ) %>% ungroup 
+breakdown_groups <- function(dataset) {
+  temp <- 
+    dataset %>% 
+    mutate(
+      mygroup = floor(as.numeric(WEEK_NR) / 2) *2) %>% # group 2 weeks in one
+    group_by(mygroup) %>%
+    # add max date of the 2 week intervalt
+    mutate(
+      max_date = max(CALL_START_DT)
+    ) %>% ungroup 
+  return(temp)
+}
+
+
+cdr1 <- breakdown_groups(cdr1)
+cdr2 <- breakdown_groups(cdr2)
+cdr3 <- breakdown_groups(cdr3)
+
+
 
 ```
 
 
-## Get a sample of the data to continue with the overall process
+## Bind all subsets together
 
 ```{r}
 # take full set
-sample_cdr <- cdr1_breakdown
+cdr_all <- bind_rows(cdr1, cdr2, cdr3)
 
 # dim(cdr1_breakdown)
 # take sample data
 # do this with the smalles granularity, thus sample % on hour.
 
 # take sample
-# sample_cdr <- sample_frac(
+# cdr_all <- sample_frac(
 #   group_by(cdr1_breakdown, HOUR), size = 0.05)
 # check dimension
-# dim(sample_cdr)
+# dim(cdr_all)
 
 ```
 
@@ -419,27 +438,27 @@ usage_stats <- function(dataset, group1, group2, ...) {
 # average outbound call duration per group
 # total call time per group
 week_set <-
-  usage_stats(dataset = sample_cdr, "mygroup", "A_NUMBER")
+  usage_stats(dataset = cdr_all, "mygroup", "A_NUMBER")
 # number of outbound calls per day over 2 weeks
 # average outbound call duration per day over 2 weeks
 # total call time per day over 2 weeks
 # day_set <- 
-# usage_stats(dataset = sample_cdr, "mygroup", "A_NUMBER", "DAY")
+# usage_stats(dataset = cdr_all, "mygroup", "A_NUMBER", "DAY")
 # number of outbound calls in (non) peak hours 
 # average outbound call duration in (non) peak hours 
 # total call time in (non) peak hours 
 peak_set <-
-  usage_stats(dataset = sample_cdr, "mygroup", "A_NUMBER", "PEAK_HOUR")
+  usage_stats(dataset = cdr_all, "mygroup", "A_NUMBER", "PEAK_HOUR")
 # number and % of outbound calls in week (end) days
 # average outbound call duration per week (end) days
 # total call time per week (end) days
 weekday_set <- 
-  usage_stats(dataset = sample_cdr, "mygroup", "A_NUMBER", "WEEKDAYS")
+  usage_stats(dataset = cdr_all, "mygroup", "A_NUMBER", "WEEKDAYS")
 # number and % of outbound calls per target network
 # average outbound call duration per target network
 # total call time per per target network
 network_set <- 
-  usage_stats(dataset = sample_cdr, "mygroup", "A_NUMBER", "TARGET_AREA")
+  usage_stats(dataset = cdr_all, "mygroup", "A_NUMBER", "TARGET_AREA")
 
 ```
 
@@ -471,8 +490,8 @@ Calculate the recency or activity of each individual call
 ```{r}
 
 # Add recency PER each call based on the 2 week interval
-sample_cdr <-
-  sample_cdr %>%
+cdr_all <-
+  cdr_all %>%
   mutate(
     diffday = as.integer(difftime(max_date,CALL_START_DT, units = "days")),
     weight = decay_factor(diffday, 0.3))
@@ -484,11 +503,11 @@ sample_cdr <-
 # Calculate recency of last activity for a customer PER mygroup 
 # get minimum of diffday for each customer
 recency_set <- 
-  sample_cdr %>%
+  cdr_all %>%
   group_by(mygroup, A_NUMBER) %>%
   summarise(
     # diffday_min = min(diffday),
-    recency_min = min(weight)) %>%
+    recency_min = max(weight)) %>%
   ungroup %>% unique
 ```
 
@@ -496,13 +515,13 @@ recency_set <-
 Merge those sets to one dataset containing all the call variables.
 
 ```{r}
-
+gc()
 # merge dataset to a wide format
 dataset_usage_kpi <- 
   Reduce(left_join, list(week_set, peak_set, weekday_set, network_set, recency_set)) 
 
 rm(week_set, peak_set, weekday_set, network_set, recency_set)
-
+gc()
 ```
 
 ## Final dataset with the usage features
@@ -533,9 +552,11 @@ dataset_usage_kpi <-
   dataset_usage_kpi %>%
   group_by(mygroup) %>%
   mutate(global_nr_calls = sum(nr_call),
-         global_time_call = sum(total_call_time),
-         frequency_perc = nr_call / global_nr_calls,
-         mon_value_perc = total_call_time / global_time_call) %>%
+         global_time_call = sum(total_call_time)) %>% 
+  ungroup() %>%
+  mutate(
+    frequency_perc = nr_call / global_nr_calls,
+    mon_value_perc = total_call_time / global_time_call) %>%
   select(-global_nr_calls, -global_time_call) %>%
   ungroup()
 
@@ -550,22 +571,22 @@ dataset_usage_kpi <-
 ```{r, warning=FALSE}
 library(doParallel)  
 no_cores <- detectCores() - 1  
-cl <- makeCluster(no_cores, type="FORK")  
+cl <- makeCluster(no_cores)  
 # registerDoParallel(cl)  # only when using foreach
 
 graphs_per_group <- 
   parLapply(cl, 
             split(
-              select(sample_cdr, A_NUMBER, B_NUMBER, mygroup),
-              sample_cdr$mygroup),
+              select(cdr_all, A_NUMBER, B_NUMBER, mygroup),
+              cdr_all$mygroup),
             graph_from_data_frame,  vertices = NULL, directed = TRUE )
 stopCluster(cl)
 
 # graphs_per_group <- 
 #   lapply(
 #     split(
-#       select(sample_cdr, A_NUMBER, B_NUMBER, mygroup),
-#       sample_cdr$mygroup), 
+#       select(cdr_all, A_NUMBER, B_NUMBER, mygroup),
+#       cdr_all$mygroup), 
 #     graph_from_data_frame, vertices = NULL,
 #     directed = TRUE
 #   )
@@ -574,7 +595,7 @@ summary(graphs_per_group)
 
 # Creating unique list of vertices 
 vertices <-
-  unique(select(sample_cdr, mygroup, A_NUMBER))
+  unique(select(cdr_all, mygroup, A_NUMBER))
 vertices$mygroup <- as.character(vertices$mygroup)
 ```
 
@@ -797,11 +818,11 @@ deg_out_graphs <-
 # The more central a node is, the lower its total distance to all other nodes
 net_closeness_in <-   
   return_dataset(
-    lapply(graphs_per_group, estimate_closeness, mode = "in", cutoff = 8,  normalized = FALSE),
+    lapply(graphs_per_group, estimate_closeness, cutoff = 10,  mode = "in", normalized = FALSE),
     "closeness_in")
 net_closeness_out <- 
   return_dataset(
-    lapply(graphs_per_group, estimate_closeness, mode = "out", cutoff = 8, normalized = FALSE),
+    lapply(graphs_per_group, estimate_closeness, cutoff = 10,  mode = "out", normalized = FALSE),
     "closeness_out")
 
 
@@ -911,6 +932,9 @@ finalset <-
            net_transitivity
          ))
 
+# Backup made from here
+# save(finalset, file = "finalset.RData")
+
 # fill NA of transitivity or triangles with 0
 
 finalset[is.na(finalset)] <- 0
@@ -928,18 +952,18 @@ rm(deg_all_graphs,deg_in_graphs, deg_out_graphs, net_betweenness, net_closeness_
 ```{r}
 # finalset <- sample_frac(finalset, size = 0.30, replace = FALSE )
 # Make a rownames of the group + A-NUMBER
-finalset <- 
+finalset_key <- 
   finalset %>%
   unite(col = key, mygroup, A_NUMBER, sep = "_", remove = FALSE)
-
-class(finalset) <- "data.frame"
-row.names(finalset) <- finalset$key
-finalset <- finalset[,-c(2:3)]
+# 
+# class(finalset) <- "data.frame"
+# row.names(finalset) <- finalset$key
+finalset_key <- finalset_key[,-c(2:3)]
 
 # Remove irrelevant features
 # keep everything, except home, other net
 clusterset <- 
-  dplyr::select(finalset,
+  dplyr::select(finalset_key,
                 key,
                 nr_unique_calls,
                 recency_min,
@@ -966,9 +990,29 @@ clusterset <-
 # TAke scaling: Range vs scaling (x-md/sd)
 range01 <- function(x){(x-min(x))/(max(x)-min(x))}
 ### Range everything between value of [0-1]
+# -key, do NOT range the key column
 clusterset_ranged <-
   clusterset %>%
   mutate_each(funs((.-min(.))/(max(.)-min(.))), -key)
+
+# Add +1
+# Take log from features
+
+
+clusterset_log <-
+  clusterset %>%
+  mutate_at(
+    vars(ave_call_time, betweenness, closeness_in,
+         closeness_out, degree_all, degree_in, nr_call, nr_unique_calls, 
+         pagerank, total_call_time, transitivity, triangles),
+    funs(.+1)) %>%
+  mutate_at(
+    vars(ave_call_time, betweenness, closeness_in,
+         closeness_out, degree_all, degree_in, nr_call, nr_unique_calls, 
+         pagerank, total_call_time, transitivity, triangles),
+    funs(log10(.))) %>%
+  mutate_each(funs((.-min(.))/(max(.)-min(.))), -key)
+
 
 ### Scale 
 # clusterset_scaled <-
@@ -977,11 +1021,25 @@ clusterset_ranged <-
 
 ```
 
-### Take samples
+### Look at variables distribution
 ```{r}
-# clusterset <- sample_frac(clusterset, size = 0.2,replace = FALSE)
-# clusterset_ranged <- filter(clusterset_ranged, key %in% clusterset$key)
-# clusterset_scaled <- filter(clusterset_scaled, key %in% clusterset$key)
+clusterset_long <-
+  clusterset %>%
+  gather(variable, value, -key)
+
+clusterset_ranged_long <-
+  clusterset_ranged %>%
+  gather(variable, value, -key)
+
+clusterset_log_long <-
+  clusterset_log %>%
+  gather(variable, value, -key)
+
+
+ggplot(clusterset_long, aes(x = value)) + geom_histogram(bins = 40) + facet_wrap(facets = "variable", scales = "free", ncol = 4) + theme_bw()
+ggplot(clusterset_ranged_long, aes(x = value)) + geom_histogram(bins = 40) + facet_wrap(facets = "variable", scales = "free", ncol = 4) + theme_bw()
+ggplot(clusterset_log_long, aes(x = value)) + geom_histogram(bins = 40) + facet_wrap(facets = "variable", scales = "free", ncol = 4) + theme_bw()
+
 
 ```
 
@@ -989,51 +1047,61 @@ clusterset_ranged <-
 
 ### Delete correlated features
 ```{r}
+require(caret)
 # 
-# delete_correlation <- function(dataset, threshold, plotcor) {
-#   require(caret)
-#   # plot correlation plot
-#   cor_set <- cor(dataset[,-1])
-#   if(plotcor == TRUE) corrplot::corrplot(cor_set, tl.cex = 0.5, type = "lower", method = "number", number.cex = 0.5)
-#   # This function searches through a correlation matrix and returns a vector of integers corresponding to columns to remove to reduce pair-wise correlations.
-#   high_correlated = findCorrelation(cor_set, cutoff= threshold, exact = TRUE) # Correlation has to be higher than 75% #
-#   
-#   # remove higly correlated (must be irrelevant) 
-#   if(length(high_correlated) > 0){
-#     cor_set_return = dataset[,-c(high_correlated)]
-#   }
-#   
-#   return(cor_set_return)
-# } 
+delete_correlation <- function(dataset, threshold, plotcor) {
+  require(caret)
+  # plot correlation plot
+  cor_set <- cor(dataset[,-1])
+  if(plotcor == TRUE) corrplot::corrplot(cor_set, tl.cex = 0.5, type = "upper", method = "number", number.cex = 0.5)
+  # This function searches through a correlation matrix and returns a vector of integers corresponding to columns to remove to reduce pair-wise correlations.
+  high_correlated = findCorrelation(cor_set, cutoff= threshold, exact = TRUE)
+  # remove higly correlated
+  if(length(high_correlated) > 0){
+    cor_set_return = dataset[,-c(high_correlated+1)]
+  }
+  
+  return(cor_set_return)
+}
 # 
 # # clusterset with no correlated features
 # # set correlation threshold
-# clusterset_no_cor <- delete_correlation(clusterset_scaled, 0.8, FALSE)
-# clusterset2_no_cor <- delete_correlation(clusterset2_scaled, 0.8, FALSE) # no perc
+# clusterset_no_cor <- delete_correlation(clusterset_ranged, 0.8, FALSE)
+clusterset_log_nocor <- delete_correlation(clusterset_log, 0.8, FALSE) # no perc
 # clusterset3_no_cor <- delete_correlation(clusterset3_scaled, 0.8, FALSE)
 
+# Manual check for correlation
+cor_set <- cor(clusterset_log[,-1])
+corrplot::corrplot(cor_set, tl.cex = 0.5, type = "lower", method = "number", number.cex = 0.5)
+
+high_correlated = findCorrelation(cor_set, cutoff= 0.9, exact = TRUE, names = TRUE) 
+high_correlated
 ```
 
 
-### Select only usage features
+### Manual selection of variables
 ```{r}
-# # clusterset with only usage features
-# 
-# # clusterset, scaled, percentage features + network features
-# clusterset_usage_scaled <- 
-#   select(clusterset_scaled, -degree_all, -degree_in, -c(betweenness:transitivity) )
-# # clusterset, NOT scaled, percentage features + network features
-# clusterset_usage <-
-#   select(clusterset, -degree_all, -degree_in, -c(betweenness:transitivity) )
-# 
-# # clusterset, scaled, NO percentage features
-# clusterset2_usage_scaled <-
-#   select(clusterset2_scaled, -degree_all, -degree_in, -c(betweenness:transitivity) )
-# 
-# # clusterset, NOT scaled, NO percentage features 
-# clusterset2_usage <-
-#   select(clusterset2, -degree_all, -degree_in, -c(betweenness:transitivity) )
-
+clusterset_log_manual <-
+  dplyr::select(
+    clusterset_log,
+    key,
+    nr_unique_calls,
+    recency_min,
+    nr_call,
+    total_call_time,
+    ave_call_time,
+    nr_call_PEAK_perc,
+    nr_call_WEEK_perc,
+    total_call_time_PEAK_PEAK_perc,
+    total_call_time_WEEK_perc,
+    degree_all,
+    degree_in,
+    betweenness,
+    closeness_in,
+    pagerank,
+    triangles,
+    transitivity
+  )
 
 ```
 
@@ -1043,19 +1111,20 @@ clusterset_ranged <-
 
 Do this several times with incremented number of clusters.
 * Evaluatie by looking at the SSE , this is called the elbow technique
+* another approach, take sameples and do the algorithm. Look at elbow plot, evaluate with db, ch metrics (full dataset clustering takes ages :) )
 
 ```{r}
 kmean_fun <- function(dataset, max_cluster) {
-  # set.seed(112)
+  # clusterSetRNGStream()
   require(foreach)
   require(doParallel)
-  no_cores <- detectCores()-1
+  no_cores <- detectCores()-3 # go with 4 cores
   #nr of processors available registerDoParallel(cl)
-  cl<-makeCluster(no_cores, type = "FORK") #nr of processors available 
+  cl<-makeCluster(no_cores) #nr of processors available 
   registerDoParallel(cl)
   
   # result.kmean <- (nrow(dataset)-1)*sum(apply(dataset,2,var))
-  result.kmean <- foreach(i=1:max_cluster) %dopar% {
+  result.kmean <- foreach(i=2:max_cluster) %dopar% {
     km <- kmeans(dataset, centers = i, iter.max = 30, nstart = 10);
     return(km)
   }
@@ -1067,7 +1136,7 @@ kmean_fun <- function(dataset, max_cluster) {
 }
 
 
-kmean_ranged <- kmean_fun(clusterset_ranged[,-1], 15)
+kmean_ranged <- kmean_fun(clusterset_log[,-1], 10)
 
 ```
 
@@ -1087,15 +1156,15 @@ kmeansrun_ranged$bestk
 Plot the withiness sum of squared distance
 ```{r}
 elbow_plot <- function(dataset, plotname) {
-  plot(1:15, sapply(dataset, function(x) x$tot.withinss), type="b", xlab="Number of Clusters", ylab="Within groups sum of squares", main = plotname)
+  plot(2:10, sapply(dataset, function(x) x$tot.withinss), type="b", xlab="Number of Clusters", ylab="Within groups sum of squares", main = plotname)
 }
 
 # show plot
-elbow_plot(kmean_ranged, "Clusterset ranged")
+elbow_plot(kmean_ranged, "Clusterset log")
 # safe plot
-png("elbow_kmeans_final2.png", width = 500,  height = 800, res = 100)
+png("elbow_kmeans_log.png", width = 500,  height = 800, res = 100)
 par(mfrow=c(1,1))
-elbow_plot(kmean_ranged, "Clusterset ranged")
+elbow_plot(kmean_ranged, "Clusterset log")
 dev.off()
 
 
@@ -1117,26 +1186,26 @@ Algorithm:
 require(fpc)
 require(cluster)
 # Use k-mediod method: pamk function that will return best nr of clusters based on ch
-pamk_ranged <- pamk(clusterset_ranged[,-1], krange = 1:15, criterion = "ch", usepam = FALSE)
-# nr of cluster
-pamk_ranged$nc
+# pamk_ranged <- pamk(clusterset_ranged[,-1], krange = 1:15, criterion = "ch", usepam = FALSE)
+# # nr of cluster
+# pamk_ranged$nc
 
 # Run clara with a range of clusters
 # Evaluate later on the optimal cluster with the evaluation statistic CH, DB
 clara_fun <- function(dataset, max_cluster) {
-  set.seed(112)
   require(cluster)
   require(foreach)
   require(doParallel)
-  no_cores <- detectCores()-1
+  no_cores <- detectCores()-6
   #nr of processors available registerDoParallel(cl)
-  cl<-makeCluster(no_cores, type = "FORK") #nr of processors available
+  cl<-makeCluster(no_cores) #nr of processors available
   registerDoParallel(cl)
   
-  result.clara <- foreach(i=2:max_cluster) %dopar% {
-    pam_set <- clara(dataset, k = i, metric = "euclidean", stand = FALSE)
-    return(pam_set)
-  }
+  result.clara <- foreach(i=2:max_cluster,.verbose = TRUE,
+                          .packages = 'cluster') %dopar% {
+                            pam_set <- clara(dataset, k = i, metric = "euclidean", stand = FALSE, samples = 100)
+                            return(pam_set)
+                          }
   
   # 
   stopImplicitCluster()
@@ -1145,8 +1214,10 @@ clara_fun <- function(dataset, max_cluster) {
 }
 
 
+
 # run clara function
-clara_ranged <- clara_fun(clusterset_ranged[,-1], 15)
+clara_ranged <- clara_fun(clusterset_log[,-1], 10)
+
 ```
 ### Evalute k-medoid
 #### Average silhouette width (based on best random subesets)
@@ -1164,7 +1235,7 @@ Silhouette width can be interpreted as follow:
 
 ```{r}
 # plot ave width of silhouette info
-plot(2:15, sapply(clara_ranged, function(x) x$silinfo$avg.width), type="b", xlab="Number of Clusters", ylab="Average silhouette width", main = "CLARA (k-mediod)")
+plot(2:12, sapply(clara_ranged, function(x) x$silinfo$avg.width), type="b", xlab="Number of Clusters", ylab="Average silhouette width", main = "CLARA (k-mediod)")
 
 # GET RESULTS
 # k.best <- which.max(sapply(clara_ranged, function(x) x$silinfo$avg.width))
@@ -1174,21 +1245,21 @@ plot(2:15, sapply(clara_ranged, function(x) x$silinfo$avg.width), type="b", xlab
 ```
 
 ## Sk means
+* can't perform when using 0-1 range.
 
-```{r}
+```{r, eval=FALSE, include=FALSE}
 library(skmeans)
 # Run clara with a range of clusters
 # Evaluate later on the optimal cluster with the evaluation statistic CH, DB
 skmeans_fun <- function(dataset, max_cluster) {
-  set.seed(112)
   require(foreach)
   require(doParallel)
-  no_cores <- detectCores()-1
+  no_cores <- detectCores()-4
   #nr of processors available registerDoParallel(cl)
-  cl<-makeCluster(no_cores, type = "FORK") #nr of processors available
+  cl<-makeCluster(no_cores) #nr of processors available
   registerDoParallel(cl)
   
-  result.skmeans <- foreach(i= 2:max_cluster) %dopar% {
+  result.skmeans <- foreach(i= 2:max_cluster, .packages = 'skmeans') %dopar% {
     skmeans_set <- skmeans(x = as.matrix(dataset), k = i, control = list(verbose = TRUE))
     return(skmeans_set)
   }
@@ -1199,21 +1270,21 @@ skmeans_fun <- function(dataset, max_cluster) {
   return(result.skmeans)
 }
 
-skmeans_ranged <- skmeans_fun(clusterset_ranged[,-1], 15)
+skmeans_ranged <- skmeans_fun(clusterset[,-1], 12)
 
 ```
 
 ## DBSCAN
-```{r}
+```{r, eval=FALSE, include=FALSE}
 library(dbscan) # used to get KNN distance plot
 library(fpc)    # used dbscan of the fpc package
 
-distplot_clusterset_scaled <- kNNdistplot(clusterset_ranged[,-1], k =  10)
-distplot_clusterset_scaled
+distplot_clusterset_ranged <- kNNdistplot(clusterset_ranged[,-1], k =  10)
+distplot_clusterset_ranged
 
 abline(h = 0.21, lty = 2)
 
-dbscan_clusterset_scaled <- dbscan(x = clusterset3_scaled[,-1], eps = 0.2, borderPoints = TRUE)
+dbscan_clusterset_scaled <- dbscan::dbscan(x = clusterset_ranged[,-1], eps = 0.2, borderPoints = TRUE)
 ```
 
 
@@ -1233,16 +1304,16 @@ ch_plot <- function(dataset, datacluster, plotname, method) {
   # get correct cluster results, depens on algorithm used
   if(method == "kmean")
   {
-    x_values = 1:15
+    x_values = 2:10
     ch_values = sapply(datacluster, function(i) index.G1(dataset[,-1], cl = i$cluster))
     db_values = sapply(datacluster, function(i) index.DB(dataset[,-1], cl = i$cluster)$DB)
   } else {
-    x_values = 2:15
+    x_values = 2:10
     ch_values = sapply(datacluster, function(i) index.G1(dataset[,-1], cl = i$clustering))
     db_values = sapply(datacluster, function(i) index.DB(dataset[,-1], cl = i$clustering)$DB)
     
   }
-  png(paste0(deparse(substitute(datacluster)),"_final.png"), width = 800,  height = 500, res = 100)
+  png(paste0(deparse(substitute(datacluster)),"_log_final.png"), width = 800,  height = 500, res = 100)
   par(mfrow=c(1,2))
   plot(x_values, ch_values, type="b", xlab="Number of Clusters", ylab="Calinski-Harabasz", main = plotname)
   plot(x_values, db_values, type="b", xlab="Number of Clusters", ylab="Davies-Bouldin", main = plotname)
@@ -1257,8 +1328,8 @@ measure_cluster <- function(dataset, datacluster) {
   cat(deparse(substitute(datacluster))) 
   indexCH <- index.G1(dataset[,-1], datacluster)
   indexDB <- index.DB(dataset[,-1], datacluster) 
-  cat('Davies-Bouldin',indexDB$DB,'\nCalinski-Harabasz',indexCH) 
-  print("---\n")
+  cat('\nDavies-Bouldin',indexDB$DB,'\nCalinski-Harabasz',indexCH,'\n') 
+  cat('-------------\n')
   # list(CH = indexCH, DB = indexDB$DB)
 }
 
@@ -1269,18 +1340,30 @@ measure_cluster <- function(dataset, datacluster) {
 ```{r}
 # Kmeans
 # plot function
-ch_plot(clusterset_ranged, kmean_ranged, "Clusterset ranged kmean", method = "kmean")
-ch_plot(clusterset_ranged, clara_ranged, "Clusterset ranged clara", method = "clara")
+ch_plot(clusterset_log, kmean_ranged, "Clusterset log kmean", method = "kmean")
+ch_plot(clusterset_log, clara_ranged, "Clusterset log clara (Euclidian)", method = "clara")
 
 
 # Get stats for a specific cluster
-sink("db_ch_statistics.txt")
-measure_cluster(clusterset_ranged, kmean_ranged[[8]]$cluster)
-measure_cluster(clusterset_ranged, kmean_ranged[[9]]$cluster)
-measure_cluster(clusterset_ranged, kmeansrun_ranged$cluster)
-measure_cluster(clusterset_ranged, pamk_ranged$pamobject$clustering)
-measure_cluster(clusterset_ranged, clara_ranged[[7]]$clustering)
-measure_cluster(clusterset_ranged, clara_ranged[[8]]$clustering)
+sink("db_ch_statistics_log_set.txt")
+measure_cluster(clusterset_log, kmean_ranged[[2]]$cluster)
+measure_cluster(clusterset_log, kmean_ranged[[3]]$cluster)
+measure_cluster(clusterset_log, kmean_ranged[[4]]$cluster)
+measure_cluster(clusterset_log, kmean_ranged[[5]]$cluster)
+measure_cluster(clusterset_log, kmean_ranged[[6]]$cluster)
+measure_cluster(clusterset_log, kmean_ranged[[7]]$cluster)
+measure_cluster(clusterset_log, kmean_ranged[[8]]$cluster)
+sink()
+
+# Get stats for a specific cluster
+sink("db_ch_statistics_clara_log_set.txt")
+measure_cluster(clusterset_log, clara_ranged[[2]]$cluster)
+measure_cluster(clusterset_log, clara_ranged[[3]]$cluster)
+measure_cluster(clusterset_log, clara_ranged[[4]]$cluster)
+measure_cluster(clusterset_log, clara_ranged[[5]]$cluster)
+measure_cluster(clusterset_log, clara_ranged[[6]]$cluster)
+measure_cluster(clusterset_log, clara_ranged[[7]]$cluster)
+measure_cluster(clusterset_log, clara_ranged[[8]]$cluster)
 sink()
 
 # safe output to console
@@ -1302,6 +1385,44 @@ sink()
 
 # Describe cluster
 
+## Add clusternumber to observations
+
+```{r}
+# Make a dataset of the clusterset (original values) plus the clusternumber from the cluster results
+clusterset_final <-
+  bind_cols(clusterset, data.frame(cluster =  kmean_ranged[[4]]$cluster))
+```
+
+## Cluster interpretation
+```{r}
+clusterset_pop <-
+  clusterset_final %>% dplyr::select(-key) %>%
+  gather(variable, value, -cluster) %>%
+  group_by(variable) %>%
+  summarise(mean_population = mean(value))
+
+clusterset_cluster <-
+  clusterset_final %>% dplyr::select(-key) %>%
+  gather(variable, value, -cluster) %>%
+  group_by(cluster, variable) %>%
+  summarise(mean_cluster = mean(value))
+
+clusterset_long <-
+  clusterset_final %>% dplyr::select(-key) %>%
+  gather(variable, value, -cluster) %>%
+  group_by(variable) %>%
+  mutate(mean_population = mean(value)) 
+
+# plots
+filter(clusterset_long, variable == "recency_min") %>% ggplot(aes(x = value, fill = factor(cluster))) + geom_density(alpha= 0.5, position = "stack")
+
+filter(clusterset_long, variable == "triangles") %>% ggplot(aes(x = value, fill = factor(cluster))) + geom_density(alpha= 0.5, position = "stack")
+
+```
+
+
+## Make visual plot of cluster characteristics
+* this is also scaled
 Look at cluster characteristics 
 * mean
 * var
@@ -1316,9 +1437,9 @@ cluster_analyse <- function(dataset, clustervector) {
   cluster_var <- 
     aggregate(clusterset[,-1],  by = list(cluster = clustervector), var)
   # print to txt
-  out <- capture.output(cluster_mean)
-  cat(out, file= paste0(nameofcluster,".txt"), sep="n")
-  
+  # out <- capture.output(cluster_mean)
+  # cat(out, file= paste0(nameofcluster,".txt"), sep="n")
+  # 
   # put it in a long format to plot with ggplot
   cluster_mean_long <-
     cluster_mean %>%
@@ -1327,7 +1448,10 @@ cluster_analyse <- function(dataset, clustervector) {
     mutate(value = range01(value))  
   # ggplot heatmap with profile of each cluster
   
-  orderit <- c("nr_unique_calls","recency_min", "nr_call", "total_call_time", "ave_call_time", "nr_call_NON_PEAK_perc", "nr_call_PEAK_perc", "nr_call_WEEK_perc", "nr_call_WEEKEND_perc", "total_call_time_NON_PEAK_perc", "total_call_time_PEAK_perc", "total_call_time_WEEK_perc", "total_call_time_WEEKEND_perc" ,"degree_all", "degree_in", "betweenness", "closeness_in", "closeness_out", "pagerank", "triangles", "transitivity")
+  orderit <- 
+    c("recency_min", "nr_call", "total_call_time", "ave_call_time", 
+      "degree_all", "degree_in", "betweenness", "closeness_in", "closeness_out", 
+      "pagerank", "triangles", "transitivity")
   
   cluster_mean_long$vars <- factor(cluster_mean_long$vars, levels = orderit)
   
@@ -1337,13 +1461,7 @@ cluster_analyse <- function(dataset, clustervector) {
 }
 
 # plot 
-cluster_analyse(clusterset, kmean_ranged[[10]]$cluster)
-cluster_analyse(clusterset, kmean_ranged[[8]]$cluster)
-cluster_analyse(clusterset, clara_ranged[[7]]$clustering)
-
-
-
-
+cluster_analyse(clusterset, kmean_ranged[[4]]$cluster)
 ```
 
 # Part 4: Sequence mining 

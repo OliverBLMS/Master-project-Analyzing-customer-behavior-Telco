@@ -9,24 +9,6 @@ html_document: default
 
 This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
 
-# Work plan
-
-Weekly progress is documented in this table. Hard **deadline** is 17-04-2017.
-
-| week | Topic covered |
-|------|---------------|
-| w1   | Data exploration, pre-processing, features extraction |
-| w2   | Create network features |
-
-Things to cover in next weeks:
-
-* Document KDD framework
-* network features
-* Cluster analysis (quality neuros / cluster) + sequence mining
-* Evaluate results,  interpretation
-* Documentation + report
-
-
 # Part 1: Exploration of CDR, pre-processing, making usage features
 
 ## Workdirectory and packages/libraries
@@ -76,7 +58,7 @@ cdr3 <- read_data("PREPAID_CDR_ANONYM_201007.txt")
 
 ```
 
-## Pre-process 
+## Pre-process (prep data)
 
 Responds to following questions:
 * Removal of noise or outliers.
@@ -295,7 +277,7 @@ cdr3 <- filter_self(cdr3)
 ```
 
 
-## Creating breakdown structure
+# Feature engineering: Creating breakdown structure
 
 Next step is solving the date format, since the usage features will need a breakdown structure for calculations (based on days, houres, peak houres,..)
 
@@ -339,6 +321,8 @@ First, explore our dataset and look for incomplete week sets.
 
 * How many observations do we have on weekly bases
 * conclusion: we should only take complete weeks into account
+
+> do this just before clustering. When the finalset dataset is created.
 
 ```{r}
 # frequency
@@ -393,7 +377,7 @@ cdr_all <- bind_rows(cdr1, cdr2, cdr3)
 
 ```
 
-## Feature engineering
+# Feature engineering: usage features
 
 Main idea is to generate usage features for customers in the dataset. However, this needs to be done at regular intervals, taking a sequence static observations at multiple time points and using these intervals for feature extraction. I choose to do this per week, so change of behavior can be tracked by week. I will slice the data per week and create aggregated records of subscribers who where active during that week. So a customer who's active every week will contains +- 16 aggregated records (final dataset contains 4 months, each month +- 4 weeks).
 
@@ -565,7 +549,7 @@ dataset_usage_kpi <-
 
 
 
-# Part 2: Social network Analysis
+# Feature engineering: Social network Analysis
 
 ## Creating network
 ```{r, warning=FALSE}
@@ -910,7 +894,7 @@ net_pagerank <-
 ```
 
 
-# Putting it all together
+# Data transformation: Blend it all together
 
 ```{r}
 
@@ -942,18 +926,52 @@ finalset[is.na(finalset)] <- 0
 rm(deg_all_graphs,deg_in_graphs, deg_out_graphs, net_betweenness, net_closeness_in,
    net_closeness_out, net_pagerank, net_triangles, net_transitivity)
 
+#save(finalset, file ="finalset.RData")
+
 ```
 
 
-# BACKUP STEP: finalset vanaf hier
+# Feature selection
+
+* include extra data cleaning step
+
+```{r}
+load(file = "finalset.RData")
+
+
+## DATA CLEANING SUBSTEP ##
+#------------------------#
+
+# Only hold full 2 week groups
+# Visual
+tidy(table(finalset$mygroup)) %>% 
+  ggplot(., aes(x = Var1, y = Freq/1000)) + geom_bar(stat = "identity") + ylab("number of observations (k)")+ xlab("Groups: two-week interval") +
+  theme_bw() + theme_minimal()
+
+finalset <-
+  filter(finalset, mygroup %in% c("18","20","22","24","26","28"))
+
+
+# Keep those customers who are presents in several periods (make a threshold)
+count_customers <-
+  finalset %>%
+  dplyr::select(mygroup, A_NUMBER) %>%
+  group_by(A_NUMBER) %>%
+  summarise(nr = n_distinct(mygroup)) %>%
+  filter(nr > 3)
+
+```
 
 * Make unique rownmames of mygroup + A_NUMBER
 * select business relevant features (apriori knowledgde)
+
+
 ```{r}
-# finalset <- sample_frac(finalset, size = 0.30, replace = FALSE )
+
 # Make a rownames of the group + A-NUMBER
 finalset_key <- 
   finalset %>%
+  filter(A_NUMBER %in% count_customers$A_NUMBER) %>%
   unite(col = key, mygroup, A_NUMBER, sep = "_", remove = FALSE)
 # 
 # class(finalset) <- "data.frame"
@@ -989,21 +1007,20 @@ clusterset <-
 
 # TAke scaling: Range vs scaling (x-md/sd)
 range01 <- function(x){(x-min(x))/(max(x)-min(x))}
+
 ### Range everything between value of [0-1]
 # -key, do NOT range the key column
-clusterset_ranged <-
-  clusterset %>%
-  mutate_each(funs((.-min(.))/(max(.)-min(.))), -key)
-
-# Add +1
-# Take log from features
+# clusterset_ranged <-
+#   clusterset %>%
+#   mutate_each(funs((.-min(.))/(max(.)-min(.))), -key)
 
 
+# Take log(x+1) from features (# Add +1 so that 0 values are not replaced by -inf)
 clusterset_log <-
   clusterset %>%
   mutate_at(
     vars(ave_call_time, betweenness, closeness_in,
-         closeness_out, degree_all, degree_in, nr_call, nr_unique_calls, 
+         closeness_out, degree_all, degree_in, nr_call, nr_unique_calls,
          pagerank, total_call_time, transitivity, triangles),
     funs(.+1)) %>%
   mutate_at(
@@ -1021,7 +1038,7 @@ clusterset_log <-
 
 ```
 
-### Look at variables distribution
+### Look at variable distributions
 ```{r}
 clusterset_long <-
   clusterset %>%
@@ -1037,7 +1054,9 @@ clusterset_log_long <-
 
 
 ggplot(clusterset_long, aes(x = value)) + geom_histogram(bins = 40) + facet_wrap(facets = "variable", scales = "free", ncol = 4) + theme_bw()
+
 ggplot(clusterset_ranged_long, aes(x = value)) + geom_histogram(bins = 40) + facet_wrap(facets = "variable", scales = "free", ncol = 4) + theme_bw()
+
 ggplot(clusterset_log_long, aes(x = value)) + geom_histogram(bins = 40) + facet_wrap(facets = "variable", scales = "free", ncol = 4) + theme_bw()
 
 
@@ -1074,7 +1093,7 @@ clusterset_log_nocor <- delete_correlation(clusterset_log, 0.8, FALSE) # no perc
 cor_set <- cor(clusterset_log[,-1])
 corrplot::corrplot(cor_set, tl.cex = 0.5, type = "lower", method = "number", number.cex = 0.5)
 
-high_correlated = findCorrelation(cor_set, cutoff= 0.9, exact = TRUE, names = TRUE) 
+high_correlated = findCorrelation(cor_set, cutoff= 0.8, exact = TRUE, names = TRUE) 
 high_correlated
 ```
 
@@ -1086,18 +1105,54 @@ clusterset_log_manual <-
     clusterset_log,
     key,
     nr_unique_calls,
-    recency_min,
     nr_call,
     total_call_time,
     ave_call_time,
     nr_call_PEAK_perc,
     nr_call_WEEK_perc,
-    total_call_time_PEAK_PEAK_perc,
+    total_call_time_PEAK_perc,
     total_call_time_WEEK_perc,
     degree_all,
     degree_in,
     betweenness,
     closeness_in,
+    pagerank,
+    triangles,
+    transitivity
+  )
+
+# Make clusterset only with usage features
+clusterset_usage <-
+  dplyr::select(
+    clusterset_log,
+    key,
+    nr_unique_calls,
+    recency_min,
+    nr_call,
+    total_call_time,
+    ave_call_time,
+    nr_call_NON_PEAK_perc,
+    nr_call_PEAK_perc,
+    nr_call_WEEK_perc,
+    nr_call_WEEKEND_perc,
+    total_call_time_NON_PEAK_perc,
+    total_call_time_PEAK_perc,
+    total_call_time_WEEK_perc,
+    total_call_time_WEEKEND_perc
+  )
+
+# Make clusterset only with network features
+
+clusterset_network <-
+  dplyr::select(
+    clusterset_log,
+    key,
+    nr_call,
+    degree_all,
+    degree_in,
+    betweenness,
+    closeness_in,
+    closeness_out,
     pagerank,
     triangles,
     transitivity
@@ -1118,14 +1173,14 @@ kmean_fun <- function(dataset, max_cluster) {
   # clusterSetRNGStream()
   require(foreach)
   require(doParallel)
-  no_cores <- detectCores()-3 # go with 4 cores
+  no_cores <- detectCores()-4 # go with 4 cores
   #nr of processors available registerDoParallel(cl)
   cl<-makeCluster(no_cores) #nr of processors available 
   registerDoParallel(cl)
   
   # result.kmean <- (nrow(dataset)-1)*sum(apply(dataset,2,var))
   result.kmean <- foreach(i=2:max_cluster) %dopar% {
-    km <- kmeans(dataset, centers = i, iter.max = 30, nstart = 10);
+    km <- kmeans(dataset, centers = i, iter.max = 30, nstart = 15);
     return(km)
   }
   # stop parallel cores
@@ -1135,8 +1190,32 @@ kmean_fun <- function(dataset, max_cluster) {
   return(result.kmean)
 }
 
+# Trials
+# kmean_ranged <- kmean_fun(clusterset_ranged[,-1], 10)
+# kmean_ranged_nocor <- kmean_fun(clusterset_log_nocor[,-1], 10)
+# kmean_log <- kmean_fun(clusterset_log[,-1], 10)
+# kmean_log_nocor <- kmean_fun(clusterset_log[,-1], 10)
 
-kmean_ranged <- kmean_fun(clusterset_log[,-1], 10)
+# Network and usage split. Run different trials and compare results
+# check if results are constistent
+kmean_network <- kmean_fun(clusterset_network[,-1], 20)
+gc()
+kmean_usage <- kmean_fun(clusterset_usage[,-1], 20)
+gc()
+
+# kmean_network2 <- kmean_fun(clusterset_network[,-1], 10)
+# kmean_usage2 <- kmean_fun(clusterset_usage[,-1], 10)
+# 
+# kmean_network3 <- kmean_fun(clusterset_network[,-1], 10)
+# kmean_usage3 <- kmean_fun(clusterset_usage[,-1], 10)
+# 
+# kmean_network4 <- kmean_fun(clusterset_network[,-1], 10)
+# kmean_usage4 <- kmean_fun(clusterset_usage[,-1], 10)
+# 
+# kmean_network5 <- kmean_fun(clusterset_network[,-1], 10)
+# kmean_usage5 <- kmean_fun(clusterset_usage[,-1], 10)
+
+
 
 ```
 
@@ -1156,17 +1235,23 @@ kmeansrun_ranged$bestk
 Plot the withiness sum of squared distance
 ```{r}
 elbow_plot <- function(dataset, plotname) {
-  plot(2:10, sapply(dataset, function(x) x$tot.withinss), type="b", xlab="Number of Clusters", ylab="Within groups sum of squares", main = plotname)
+  plot(2:20, sapply(dataset, function(x) x$tot.withinss), type="b", xlab="Number of Clusters", ylab="Within groups sum of squares", main = plotname)
 }
 
 # show plot
-elbow_plot(kmean_ranged, "Clusterset log")
-# safe plot
-png("elbow_kmeans_log.png", width = 500,  height = 800, res = 100)
-par(mfrow=c(1,1))
-elbow_plot(kmean_ranged, "Clusterset log")
-dev.off()
+elbow_plot(kmean_network, "Clusterset network")
+elbow_plot(kmean_usage, "Clusterset usage")
 
+# safe plot
+png("elbow_kmean_usage.png", width = 500,  height = 400, res = 100)
+par(mfrow=c(1,1))
+elbow_plot(kmean_usage, "Clusterset usage")
+dev.off()
+# safe plot
+png("elbow_kmean_network.png", width = 500,  height = 400, res = 100)
+par(mfrow=c(1,1))
+elbow_plot(kmean_network, "Clusterset network")
+dev.off()
 
 ```
 
@@ -1186,7 +1271,7 @@ Algorithm:
 require(fpc)
 require(cluster)
 # Use k-mediod method: pamk function that will return best nr of clusters based on ch
-# pamk_ranged <- pamk(clusterset_ranged[,-1], krange = 1:15, criterion = "ch", usepam = FALSE)
+pamk_ranged <- pamk(clusterset_log[,-1], krange = 1:10, criterion = "ch", usepam = FALSE)
 # # nr of cluster
 # pamk_ranged$nc
 
@@ -1203,7 +1288,7 @@ clara_fun <- function(dataset, max_cluster) {
   
   result.clara <- foreach(i=2:max_cluster,.verbose = TRUE,
                           .packages = 'cluster') %dopar% {
-                            pam_set <- clara(dataset, k = i, metric = "euclidean", stand = FALSE, samples = 100)
+                            pam_set <- clara(dataset, k = i, metric = "euclidean", stand = FALSE)
                             return(pam_set)
                           }
   
@@ -1216,9 +1301,47 @@ clara_fun <- function(dataset, max_cluster) {
 
 
 # run clara function
-clara_ranged <- clara_fun(clusterset_log[,-1], 10)
+# clara_log <- clara_fun(clusterset_log[,-1], 10)
+# clara_log_nocor <- clara_fun(clusterset_log_nocor[,-1], 10)
+
+clara_usage <- clara_fun(clusterset_usage[,-1], 20)
+clara_network <- clara_fun(clusterset_network[,-1], 20)
+
+clare_clusterset <- clara_fun(clusterset_log[,-1], 15)
 
 ```
+
+
+### Elbow technique for CLARA (PAM)
+* Plot the objective
+```{r}
+elbow_objective <- function(dataset, plotname) {
+  plot(2:15, sapply(dataset, function(x) x$objective), type="b", xlab="Number of Clusters", ylab="objective", main = plotname)
+}
+
+# show plot
+elbow_objective(clare_clusterset, "Clusterset CLARA (all features)")
+elbow_objective(clara_network, "Clusterset network")
+elbow_objective(clara_usage, "Clusterset usage")
+
+# safe plot
+png("elbow_clara_objective_network.png", width = 500,  height = 400, res = 100)
+par(mfrow=c(1,1))
+elbow_objective(clara_network, "Clusterset network")
+dev.off()
+
+png("elbow_clara_objective_usage.png", width = 500,  height = 400, res = 100)
+par(mfrow=c(1,1))
+elbow_objective(clara_usage, "Clusterset usage")
+dev.off()
+
+png("elbow_clara_objective_ALL.png", width = 500,  height = 400, res = 100)
+par(mfrow=c(1,1))
+elbow_objective(clare_clusterset, "Clusterset ALL")
+dev.off()
+
+```
+
 ### Evalute k-medoid
 #### Average silhouette width (based on best random subesets)
 
@@ -1248,49 +1371,53 @@ plot(2:12, sapply(clara_ranged, function(x) x$silinfo$avg.width), type="b", xlab
 * can't perform when using 0-1 range.
 
 ```{r, eval=FALSE, include=FALSE}
-library(skmeans)
-# Run clara with a range of clusters
-# Evaluate later on the optimal cluster with the evaluation statistic CH, DB
-skmeans_fun <- function(dataset, max_cluster) {
-  require(foreach)
-  require(doParallel)
-  no_cores <- detectCores()-4
-  #nr of processors available registerDoParallel(cl)
-  cl<-makeCluster(no_cores) #nr of processors available
-  registerDoParallel(cl)
-  
-  result.skmeans <- foreach(i= 2:max_cluster, .packages = 'skmeans') %dopar% {
-    skmeans_set <- skmeans(x = as.matrix(dataset), k = i, control = list(verbose = TRUE))
-    return(skmeans_set)
-  }
-  # stop parallel computing
-  stopImplicitCluster()
-  stopCluster(cl)
-  # return result as list
-  return(result.skmeans)
-}
-
-skmeans_ranged <- skmeans_fun(clusterset[,-1], 12)
+# library(skmeans)
+# # # Run clara with a range of clusters
+# # # Evaluate later on the optimal cluster with the evaluation statistic CH, DB
+# skmeans_fun <- function(dataset, max_cluster) {
+#   require(foreach)
+#   require(doParallel)
+#   no_cores <- detectCores()-5
+#   #nr of processors available registerDoParallel(cl)
+#   cl<-makeCluster(no_cores) #nr of processors available
+#   registerDoParallel(cl)
+# 
+#   result.skmeans <- foreach(i= 2:max_cluster, .packages = 'skmeans') %dopar% {
+#     skmeans_set <- skmeans(x = as.matrix(dataset), k = i, control = list(verbose = TRUE))
+#     return(skmeans_set)
+#   }
+#   # stop parallel computing
+#   stopImplicitCluster()
+#   stopCluster(cl)
+#   # return result as list
+#   return(result.skmeans)
+# }
+# 
+# skmeans_ranged <- skmeans_fun(sample_frac(clusterset_usage[,-1], size = 0.1), 10)
 
 ```
 
 ## DBSCAN
+* dbscan fails after 2 days running (bad allocation of memory)
+** meaning, its still short on memory ...
 ```{r, eval=FALSE, include=FALSE}
-library(dbscan) # used to get KNN distance plot
-library(fpc)    # used dbscan of the fpc package
+# library(dbscan) # used to get KNN distance plot
+# library(fpc)    # used dbscan of the fpc package
+# 
+# kNNdistplot(clusterset_network[,-1], k =  5)
+# kNNdistplot(clusterset_usage[,-1], k =  5)
+# 
+# 
+# abline(h = 0.21, lty = 2)
+# 
+# dbscan_clusterset_log <- dbscan::dbscan(x = clusterset_log[,-1], eps = 0.4, borderPoints = TRUE)
 
-distplot_clusterset_ranged <- kNNdistplot(clusterset_ranged[,-1], k =  10)
-distplot_clusterset_ranged
-
-abline(h = 0.21, lty = 2)
-
-dbscan_clusterset_scaled <- dbscan::dbscan(x = clusterset_ranged[,-1], eps = 0.2, borderPoints = TRUE)
 ```
 
 
 
 ## Evaluate clusters
-K-means is all about centroids and variance and therefore criterions such as Calinski-Harabasz are more focused here.
+K-means is all about centroids and variance.  therefore criterions such as Calinski-Harabasz are more focused here.
 
 Use following functions to calculate Calinski-Harabsz and Davies Boulding.
 
@@ -1299,39 +1426,45 @@ Use following functions to calculate Calinski-Harabsz and Davies Boulding.
 * function to retrieve CH, DB stats
 
 ```{r}
-ch_plot <- function(dataset, datacluster, plotname, method) {
+cluster_metrics <- function(dataset, datacluster, method) {
   require(clusterSim)
   # get correct cluster results, depens on algorithm used
   if(method == "kmean")
   {
-    x_values = 2:10
     ch_values = sapply(datacluster, function(i) index.G1(dataset[,-1], cl = i$cluster))
+    gc()
     db_values = sapply(datacluster, function(i) index.DB(dataset[,-1], cl = i$cluster)$DB)
   } else {
-    x_values = 2:10
     ch_values = sapply(datacluster, function(i) index.G1(dataset[,-1], cl = i$clustering))
+    gc()
     db_values = sapply(datacluster, function(i) index.DB(dataset[,-1], cl = i$clustering)$DB)
     
   }
-  png(paste0(deparse(substitute(datacluster)),"_log_final.png"), width = 800,  height = 500, res = 100)
+  x_values = 2:15
+  temp <- data.frame(x_values, ch_values, db_values)
+  return(temp)
+}
+
+  
+ch_plot <- function(dataset, plotname){
+  png(paste0(deparse(substitute(dataset)),"_log_count_final_bis.png"), width = 800,  height = 400, res = 100)
   par(mfrow=c(1,2))
-  plot(x_values, ch_values, type="b", xlab="Number of Clusters", ylab="Calinski-Harabasz", main = plotname)
-  plot(x_values, db_values, type="b", xlab="Number of Clusters", ylab="Davies-Bouldin", main = plotname)
+  plot(dataset$x_values, dataset$ch_values, type="b", xlab="Number of Clusters", ylab="Calinski-Harabasz", main = plotname)
+  plot(dataset$x_values, dataset$db_values, type="b", xlab="Number of Clusters", ylab="Davies-Bouldin", main = plotname)
   dev.off()
 }
 
-# check fit of clusters
-# return single 
-measure_cluster <- function(dataset, datacluster) {
-  ####STATISTICS
-  require(clusterSim)
-  cat(deparse(substitute(datacluster))) 
-  indexCH <- index.G1(dataset[,-1], datacluster)
-  indexDB <- index.DB(dataset[,-1], datacluster) 
-  cat('\nDavies-Bouldin',indexDB$DB,'\nCalinski-Harabasz',indexCH,'\n') 
-  cat('-------------\n')
-  # list(CH = indexCH, DB = indexDB$DB)
-}
+# check metrics
+# measure_cluster <- function(dataset, datacluster) {
+#   ####STATISTICS
+#   require(clusterSim)
+#   cat(deparse(substitute(datacluster))) 
+#   CH <- index.G1(dataset[,-1], datacluster)
+#   DB <- index.DB(dataset[,-1], datacluster) 
+#   cat('\nDavies-Bouldin',DB$DB,'\nCalinski-Harabasz',CH,'\n') 
+#   cat('-------------\n')
+#   # list(CH = indexCH, DB = indexDB$DB)
+# }
 
 ```
 
@@ -1339,46 +1472,114 @@ measure_cluster <- function(dataset, datacluster) {
 
 ```{r}
 # Kmeans
+# Stats
+kmean_network_stats <- cluster_metrics(clusterset_network, kmean_network, "kmean")
+kmean_usage_stats <- cluster_metrics(clusterset_usage, kmean_usage, "kmean")
+
 # plot function
-ch_plot(clusterset_log, kmean_ranged, "Clusterset log kmean", method = "kmean")
-ch_plot(clusterset_log, clara_ranged, "Clusterset log clara (Euclidian)", method = "clara")
+ch_plot(kmean_network_stats, "Kmean - Network")
+ch_plot(kmean_usage_stats, "Kmean - usage")
+# ch_plot(clusterset_network, kmean_network2, "Kmean - network", method = "kmean")
+# ch_plot(clusterset_usage, kmean_usage2, "Kmean - usage", method = "kmean")
+
+# CLARA
+# Stats
+clara_cluster_stats <- cluster_metrics(clusterset_log, clare_clusterset[c(1:14)], "clara")
+clara_network_stats <- cluster_metrics(clusterset_network,clara_network[c(1:10)], "clara")
+clara_usage_stats <- cluster_metrics(clusterset_usage, clara_usage[c(1:10)], "clara")
+
+# plot function
+ch_plot(clara_cluster_stats, "Clusterset  Clara")
+
+ch_plot(clara_network_stats, "Clusterset network Clara")
+ch_plot(clara_usage_stats, "Clusterset usage - Clara")
+# ch_plot(clusterset_network, clara_network2, "Clusterset network Clara", method = "clara")
+# ch_plot(clusterset_usage, clara_usage2, "Clusterset usage - Clara", method = "clara")
 
 
 # Get stats for a specific cluster
-sink("db_ch_statistics_log_set.txt")
-measure_cluster(clusterset_log, kmean_ranged[[2]]$cluster)
-measure_cluster(clusterset_log, kmean_ranged[[3]]$cluster)
-measure_cluster(clusterset_log, kmean_ranged[[4]]$cluster)
-measure_cluster(clusterset_log, kmean_ranged[[5]]$cluster)
-measure_cluster(clusterset_log, kmean_ranged[[6]]$cluster)
-measure_cluster(clusterset_log, kmean_ranged[[7]]$cluster)
-measure_cluster(clusterset_log, kmean_ranged[[8]]$cluster)
-sink()
-
-# Get stats for a specific cluster
-sink("db_ch_statistics_clara_log_set.txt")
-measure_cluster(clusterset_log, clara_ranged[[2]]$cluster)
-measure_cluster(clusterset_log, clara_ranged[[3]]$cluster)
-measure_cluster(clusterset_log, clara_ranged[[4]]$cluster)
-measure_cluster(clusterset_log, clara_ranged[[5]]$cluster)
-measure_cluster(clusterset_log, clara_ranged[[6]]$cluster)
-measure_cluster(clusterset_log, clara_ranged[[7]]$cluster)
-measure_cluster(clusterset_log, clara_ranged[[8]]$cluster)
-sink()
-
-# safe output to console
-sink(file = "Cluster stats.txt")
-print(kmeansrun_ranged)
-print("-----------------------")
-print(kmean_ranged[[8]])
-print("-----------------------")
-print(kmean_ranged[[10]])
-print("-----------------------")
-print(clara_ranged[[7]])
-print("-----------------------")
-print(pamk_ranged)
-sink()
-
+# sink("db_ch_statistics_log_set.txt")
+# measure_cluster(clusterset_log, kmean_ranged[[1]]$cluster)
+# measure_cluster(clusterset_log, kmean_ranged[[2]]$cluster)
+# measure_cluster(clusterset_log, kmean_ranged[[3]]$cluster)
+# measure_cluster(clusterset_log, kmean_ranged[[4]]$cluster)
+# measure_cluster(clusterset_log, kmean_ranged[[5]]$cluster)
+# measure_cluster(clusterset_log, kmean_ranged[[6]]$cluster)
+# measure_cluster(clusterset_log, kmean_ranged[[7]]$cluster)
+# measure_cluster(clusterset_log, kmean_ranged[[8]]$cluster)
+# sink()
+# 
+# # Get stats for a specific cluster
+# sink("db_ch_statistics_clara_log_set.txt")
+# measure_cluster(clusterset_log, clara_ranged[[1]]$cluster)
+# measure_cluster(clusterset_log, clara_ranged[[2]]$cluster)
+# measure_cluster(clusterset_log, clara_ranged[[3]]$cluster)
+# measure_cluster(clusterset_log, clara_ranged[[4]]$cluster)
+# measure_cluster(clusterset_log, clara_ranged[[5]]$cluster)
+# measure_cluster(clusterset_log, clara_ranged[[6]]$cluster)
+# measure_cluster(clusterset_log, clara_ranged[[7]]$cluster)
+# measure_cluster(clusterset_log, clara_ranged[[8]]$cluster)
+# sink()
+# 
+# # Get stats for a specific cluster
+# sink("db_ch_statistics_clara_log_manual_set.txt")
+# measure_cluster(clusterset_log_manual, clara_log_manual[[1]]$cluster)
+# measure_cluster(clusterset_log_manual, clara_log_manual[[2]]$cluster)
+# measure_cluster(clusterset_log_manual, clara_log_manual[[3]]$cluster)
+# measure_cluster(clusterset_log_manual, clara_log_manual[[4]]$cluster)
+# measure_cluster(clusterset_log_manual, clara_log_manual[[5]]$cluster)
+# measure_cluster(clusterset_log_manual, clara_log_manual[[6]]$cluster)
+# measure_cluster(clusterset_log_manual, clara_log_manual[[7]]$cluster)
+# measure_cluster(clusterset_log_manual, clara_log_manual[[8]]$cluster)
+# sink()
+# 
+# # Get stats for a specific cluster
+# sink("db_ch_statistics_clara_network_set.txt")
+# measure_cluster(clusterset_network, clara_network[[1]]$cluster)
+# measure_cluster(clusterset_network, clara_network[[2]]$cluster)
+# measure_cluster(clusterset_network, clara_network[[3]]$cluster)
+# measure_cluster(clusterset_network, clara_network[[4]]$cluster)
+# measure_cluster(clusterset_network, clara_network[[5]]$cluster)
+# measure_cluster(clusterset_network, clara_network[[6]]$cluster)
+# measure_cluster(clusterset_network, clara_network[[7]]$cluster)
+# measure_cluster(clusterset_network, clara_network[[8]]$cluster)
+# sink()
+# 
+# # Get stats for a specific cluster
+# sink("db_ch_statistics_clara_usage_set.txt")
+# measure_cluster(clusterset_usage, clara_usage[[1]]$cluster)
+# measure_cluster(clusterset_usage, clara_usage[[2]]$cluster)
+# measure_cluster(clusterset_usage, clara_usage[[3]]$cluster)
+# measure_cluster(clusterset_usage, clara_usage[[4]]$cluster)
+# measure_cluster(clusterset_usage, clara_usage[[5]]$cluster)
+# measure_cluster(clusterset_usage, clara_usage[[6]]$cluster)
+# measure_cluster(clusterset_usage, clara_usage[[7]]$cluster)
+# measure_cluster(clusterset_usage, clara_usage[[8]]$cluster)
+# sink()
+# 
+# # Get stats for a specific cluster
+# sink("db_ch_statistics_kmean_usage_set.txt")
+# measure_cluster(clusterset_usage, kmean_usage[[1]]$cluster)
+# measure_cluster(clusterset_usage, kmean_usage[[2]]$cluster)
+# measure_cluster(clusterset_usage, kmean_usage[[3]]$cluster)
+# measure_cluster(clusterset_usage, kmean_usage[[4]]$cluster)
+# measure_cluster(clusterset_usage, kmean_usage[[5]]$cluster)
+# measure_cluster(clusterset_usage, kmean_usage[[6]]$cluster)
+# measure_cluster(clusterset_usage, kmean_usage[[7]]$cluster)
+# measure_cluster(clusterset_usage, kmean_usage[[8]]$cluster)
+# sink()
+# 
+# # Get stats for a specific cluster
+# sink("db_ch_statistics_kmean_network_set.txt")
+# measure_cluster(clusterset_network, kmean_network[[1]]$cluster)
+# measure_cluster(clusterset_network, kmean_network[[2]]$cluster)
+# measure_cluster(clusterset_network, kmean_network[[3]]$cluster)
+# measure_cluster(clusterset_network, kmean_network[[4]]$cluster)
+# measure_cluster(clusterset_network, kmean_network[[5]]$cluster)
+# measure_cluster(clusterset_network, kmean_network[[6]]$cluster)
+# measure_cluster(clusterset_network, kmean_network[[7]]$cluster)
+# measure_cluster(clusterset_network, kmean_network[[8]]$cluster)
+# sink()
 
 ```
 
@@ -1388,96 +1589,218 @@ sink()
 ## Add clusternumber to observations
 
 ```{r}
-# Make a dataset of the clusterset (original values) plus the clusternumber from the cluster results
-clusterset_final <-
-  bind_cols(clusterset, data.frame(cluster =  kmean_ranged[[4]]$cluster))
+# Make a dataset of the clusterset (ranges values) plus the clusternumber from the cluster results
+clusterset_all_final <-
+  cbind(clusterset_log, clara = clare_clusterset[[4]]$clustering)
+clusterset_usage_final <-
+  cbind(clusterset_usage, clara = clara_usage[[3]]$clustering, kmean = kmean_usage[[3]]$cluster)
+clusterset_network_final <-
+    cbind(clusterset_network, clara = clara_network[[2]]$clustering, kmean = kmean_network[[2]]$cluster)
+
+
+# Make a dataset of the clusterset (ORIGINAL values) plus the clusternumber from the cluster results
+clusterset_usage_orig_final <-
+  cbind(dplyr::select_(clusterset, .dots = colnames(clusterset_usage)), clara = clara_usage[[3]]$clustering, kmean = kmean_usage[[3]]$cluster)
+
+clusterset_network_orig_final <-
+  cbind(dplyr::select_(clusterset, .dots = colnames(clusterset_network)),clara = clara_network[[2]]$clustering, kmean = kmean_network[[2]]$cluster)
+
+clusterset_all_orig_final <-
+    cbind(clusterset, clara = clare_clusterset[[4]]$clustering)
+
+
 ```
 
-## Cluster interpretation
+## Cluster interpretation: Make visual plot of cluster characteristics
+* Look at cluster characteristics 
+* to plot, used the scaled set
+* (mean, var)
+
+### Cluster interpretation on ranged clusterset
+* maybe hard for interpretation, but easy to plot when everything is ranged 0-1
 ```{r}
-clusterset_pop <-
-  clusterset_final %>% dplyr::select(-key) %>%
-  gather(variable, value, -cluster) %>%
-  group_by(variable) %>%
-  summarise(mean_population = mean(value))
+clusterset_usage_mean <-
+  clusterset_usage_final %>% dplyr::select(-key, -kmean) %>%
+  group_by(clara) %>%
+  gather(variable, value, -clara) %>%
+  group_by(clara, variable) %>%
+  summarise(median_cluster = median(value),
+            mean_cluster = mean(value),
+            var_cluster = var(value),
+            nr_cluster = n())
 
-clusterset_cluster <-
-  clusterset_final %>% dplyr::select(-key) %>%
-  gather(variable, value, -cluster) %>%
-  group_by(cluster, variable) %>%
-  summarise(mean_cluster = mean(value))
+clusterset_network_mean <-
+  clusterset_network_final %>% dplyr::select(-key, -kmean) %>%
+  group_by(clara) %>%
+  gather(variable, value, -clara) %>%
+  group_by(clara, variable) %>%
+  summarise(median_cluster = median(value),
+            mean_cluster = mean(value),
+            var_cluster = var(value),
+            nr_cluster = n())
 
-clusterset_long <-
-  clusterset_final %>% dplyr::select(-key) %>%
-  gather(variable, value, -cluster) %>%
-  group_by(variable) %>%
-  mutate(mean_population = mean(value)) 
+clusterset_all_mean <-
+  clusterset_all_final %>% dplyr::select(-key) %>%
+  group_by(clara) %>%
+  gather(variable, value, -clara) %>%
+  group_by(clara, variable) %>%
+  summarise(median_cluster = median(value),
+            mean_cluster = mean(value),
+            var_cluster = var(value),
+            nr_cluster = n())
 
 # plots
-filter(clusterset_long, variable == "recency_min") %>% ggplot(aes(x = value, fill = factor(cluster))) + geom_density(alpha= 0.5, position = "stack")
-
-filter(clusterset_long, variable == "triangles") %>% ggplot(aes(x = value, fill = factor(cluster))) + geom_density(alpha= 0.5, position = "stack")
-
-```
-
-
-## Make visual plot of cluster characteristics
-* this is also scaled
-Look at cluster characteristics 
-* mean
-* var
-
-```{r}
-
-cluster_analyse <- function(dataset, clustervector) {
-  nameofcluster <- deparse(substitute(clustervector))
-  # characteristics of each cluster
-  cluster_mean <- 
-    aggregate(clusterset[,-1],  by = list(cluster = clustervector), mean)
-  cluster_var <- 
-    aggregate(clusterset[,-1],  by = list(cluster = clustervector), var)
-  # print to txt
-  # out <- capture.output(cluster_mean)
-  # cat(out, file= paste0(nameofcluster,".txt"), sep="n")
-  # 
-  # put it in a long format to plot with ggplot
-  cluster_mean_long <-
-    cluster_mean %>%
-    gather(vars, value, -cluster) %>%
-    group_by(vars) %>%
-    mutate(value = range01(value))  
-  # ggplot heatmap with profile of each cluster
-  
-  orderit <- 
-    c("recency_min", "nr_call", "total_call_time", "ave_call_time", 
-      "degree_all", "degree_in", "betweenness", "closeness_in", "closeness_out", 
-      "pagerank", "triangles", "transitivity")
-  
-  cluster_mean_long$vars <- factor(cluster_mean_long$vars, levels = orderit)
-  
-  ggplot(cluster_mean_long, aes(x = as.factor(cluster), y = vars)) + geom_tile(aes(fill = value), color = "white") + theme_minimal()+ scale_fill_gradient(low = "white", high = "darkblue") + theme_bw() + theme(axis.ticks = element_blank(), panel.border = element_blank()) + scale_x_discrete(expand = c(0, 0))
-  ggsave(filename =  paste0(nameofcluster,".png"), device = "png")
-  
+plot_cluster_analyse <- function(plotset, cluster_var, fill_var, title, name) {
+      plotset %>%
+      ggplot(., aes(x = as.factor(get(cluster_var)), y = variable, label = round(get(fill_var), 2))) + 
+      geom_tile(aes(fill = get(fill_var)), color = "white") + geom_text(color = "gray50")+
+      theme_minimal() + 
+      scale_fill_gradient(low = "white", high = "#4AC29A", guide = guide_colorbar(title ="value")) + 
+      theme_bw() + 
+      theme(axis.ticks = element_blank(), panel.border = element_blank()) +
+      labs(title = title) +
+      scale_x_discrete(expand = c(0, 0)) +
+      xlab("cluster") + 
+      ggsave(filename = name, dpi = 150)
 }
 
-# plot 
-cluster_analyse(clusterset, kmean_ranged[[4]]$cluster)
+# PLOT MEAN of cluster CLARA
+# usage
+plot_cluster_analyse(clusterset_usage_mean, "clara", "mean_cluster", "Mean of usage clusters", "mean_usage_cluster.png"  )
+# network
+plot_cluster_analyse(clusterset_network_mean, "clara", "mean_cluster", "Mean of network clusters", "mean_network_cluster.png"  )
+# ALL
+plot_cluster_analyse(clusterset_all_mean, "clara", "mean_cluster", "Mean of clusters (all clusters)", "mean_all_cluster.png"  )
+
+# PLOT VAR of cluster
+# usage
+plot_cluster_analyse(clusterset_usage_mean, "clara", "var_cluster", "Variance of usage clusters", "var_usage_cluster.png"  )
+# network
+plot_cluster_analyse(clusterset_network_mean, "clara", "var_cluster", "Variance of network clusters", "var_network_cluster.png"  )
+
+
+## SAME FOR ORIGINAL SET
+clusterset_usage_org_stat <-
+  clusterset_usage_orig_final %>% dplyr::select(-key, -kmean) %>%
+  group_by(clara) %>%
+  gather(variable, value, -clara) %>%
+  group_by(clara, variable) %>%
+  summarise(median_cluster = median(value),
+            mean_cluster = mean(value),
+            var_cluster = var(value),
+            nr_cluster = n())
+
+clusterset_network_org_stat <-
+  clusterset_network_orig_final %>% dplyr::select(-key, -kmean) %>%
+  group_by(clara) %>%
+  gather(variable, value, -clara) %>%
+  group_by(clara, variable) %>%
+  summarise(median_cluster = median(value),
+            mean_cluster = mean(value),
+            var_cluster = var(value),
+            nr_cluster = n())
+
+
+clusterset_network_org_stat <-
+  clusterset_all_orig_final %>% dplyr::select(-key) %>%
+  group_by(clara) %>%
+  gather(variable, value, -clara) %>%
+  group_by(clara, variable) %>%
+  summarise(median_cluster = median(value),
+            mean_cluster = mean(value),
+            var_cluster = var(value),
+            nr_cluster = n())
+
+# Or just make summary statistics
+require(stargazer)
+stargazer(filter(clusterset_network_orig_final, clara == 1), type = "text", title="Descriptive statistics", digits=1, out ="stats_network_clust1.txt")
+
+clusterset_usage_orig_final 
+clusterset_network_orig_final 
+
+stargazer(filter(clusterset_all_orig_final, clara == 1), type = "text", title="Descriptive statistics", digits=1, out ="stats_clust1.txt")
+
+# Plot overlap phenomemon
+sample_frac(clusterset_usage_final, size = 0.008) %>% ggplot(., aes(x = total_call_time, y = nr_call_WEEK_perc, colour = clara)) + geom_point(alpha = 0.4) + theme_bw() + theme_minimal()
 ```
+
+## Cluster descriptives
+* size
+* nr customers
+
+```{r}
+clusterset_usage_mean[,c(1,6)] %>% unique() %>% transform(total = sum(nr_cluster)) %>% mutate(perc = round(nr_cluster / total * 100, 1))
+
+clusterset_usage_orig_final %>% 
+    separate(key, into = c("mygroup", "A_NUMBER")) %>%
+  group_by(clara) %>%
+  summarise(n_customers = n_distinct(A_NUMBER))
+
+
+clusterset_network_mean[,c(1,6)] %>% unique() %>% transform(total = sum(nr_cluster)) %>% mutate(perc = round(nr_cluster / total * 100, 1))
+
+clusterset_network_orig_final %>% 
+    separate(key, into = c("mygroup", "A_NUMBER")) %>%
+  group_by(clara) %>%
+  summarise(n_customers = n_distinct(A_NUMBER))
+
+
+```
+
 
 # Part 4: Sequence mining 
 
 Next, lets do some sequence mining on the cluster we have for each customer on different time-periods. Before that, there needs to be some trasformztion done.
 * get clusterresult on a customer level, this is for each timeperiod the assigned cluster
-* add minilal support on the frequent itemset for the sequence mining
+* set minimal supportlevel on th itemset for the sequence mining
 
 ```{r}
-library(arulesSequences)
+library(TraMineR)
+# Build set with proper key attributes
+create_sequence_objects <- function(dataset) {
+      # create dataset: mygroup, anumber , cluster 
+      temp <- dplyr::select(dataset, key, clara) %>%
+               separate(key, into = c("mygroup", "A_NUMBER"))
+      
+      # Build sequence set of clusters per mygroup
+      seq_temp <-
+        temp %>%
+        spread(mygroup, clara, fill = NA) 
 
-pos_seq <- data_frame(key = clusterset_ranged[,1], cluster = clara_ranged[[7]]$clustering)
+      # Make factors
+      seq_temp = data.frame(lapply(seq_temp,as.factor))
+      
+      # Create state sequence object with TraMiner
+      # handle missing value: or delete the begin/gap/end states when missing or replace with "missing" label
+      seq_set <- seqdef(seq_temp[,-1], id = seq_temp[,1], left = "DEL", nr = "None")
+      return(seq_set)
+}
 
-# Transform data set
-pos_seq <- 
-  pos_seq %>%
-  separate(col = key, into = c("mygroup", "A_NUMBER"), sep = "_" )
+# Make sequence of usege / network 
+usage_seq <- create_sequence_objects(clusterset_usage_final)
+network_seq <- create_sequence_objects(clusterset_network_final)
+
+# seq objects
+usage_seqobj <- seqecreate(usage_seq)
+network_seqobj <- seqecreate(network_seq)
+# Search for frequent subsequences (based on prefix-tree-based search)
+usage_subseq <- seqefsub(seqecreate(usage_seq), pMinSupport = 0.1)
+network_subseq <- seqefsub(seqecreate(network_seq), pMinSupport = 0.1)
+usage_subseq
+network_subseq
+
+# Plot frequent sub sequences
+plot(usage_subseq[1:15], col = "#4AC29A", main = "Freq. sequences usage clusters" )
+plot(network_subseq[1:15], col = "#4AC29A",  main = "Freq. sequences network clusters" )
+
+
+# Plot state distributionsa
+# USage
+seqiplot(usage_seq, title = "Index plot (first 10 sequences)", withlegend = TRUE)
+seqdplot(usage_seq, title = "State distribution plot", withlegend = TRUE)
+seqfplot(usage_seq, title = "Sequence frequency plot", withlegend = FALSE, pbarw = TRUE)
+seqlegend(dataset)
+
+
 ```
 

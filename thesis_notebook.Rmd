@@ -16,6 +16,8 @@ This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute
 Basic steps to set the workdirectory and load the necessary packages/libraries.
 
 ```{r, message=FALSE, warning=FALSE, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+
 # get / set workdirectory to read in the datafile
 ################################################################################################################
 # setwd(dir = "/Users/oliver.belmans/Data/R_workdirectory/Thesis")
